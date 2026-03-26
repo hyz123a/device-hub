@@ -1,0 +1,21 @@
+[package]
+name = "device-hub-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+chrono.workspace = true
+device-hub-adapter-jlink = { path = "../adapters/jlink" }
+device-hub-adapter-ssh = { path = "../adapters/ssh" }
+device-hub-shared = { path = "../shared" }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tower-http.workspace = true
+uuid.workspace = true

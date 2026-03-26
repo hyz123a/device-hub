@@ -1,0 +1,23 @@
+devices:
+  - id: board-01
+    label: Linux Board
+    ssh:
+      host: 192.168.1.100
+      user: root
+      key: $SSH_KEY_PATH
+
+  - id: board-02
+    label: Bare Metal Target
+    jlink:
+      serial: "123456789"
+      device: STM32H743
+
+  - id: board-03
+    label: Full Dev Board
+    ssh:
+      host: 192.168.1.102
+      user: root
+      key: $SSH_KEY_PATH
+    jlink:
+      serial: "987654321"
+      device: STM32H743

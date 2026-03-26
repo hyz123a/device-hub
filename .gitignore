@@ -1,0 +1,8 @@
+tmp/
+target/
+frontend/dist/
+bazel-*/
+bazel-bin
+bazel-out
+bazel-testlogs
+bazel-hyz-web

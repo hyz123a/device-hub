@@ -1,0 +1,10 @@
+[package]
+name = "device-hub-adapter-jlink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+device-hub-shared = { path = "../../shared" }
+serde.workspace = true
+thiserror.workspace = true
