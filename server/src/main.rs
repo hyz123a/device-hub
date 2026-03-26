@@ -1,14 +1,6 @@
-mod api;
-mod app;
-mod config;
-mod error;
-mod events;
-mod services;
-mod storage;
-
 use std::net::SocketAddr;
 
-use crate::{app::build_router, config::AppConfig};
+use device_hub_server::{app::build_router, config::AppConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

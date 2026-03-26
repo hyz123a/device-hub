@@ -1,0 +1,124 @@
+use std::time::Duration;
+
+use device_hub_server::{app::build_router, config::AppConfig};
+use device_hub_shared::{ActionRequest, Device, JlinkConfig, Job, JobStatus, SshConfig};
+
+pub struct TestApp {
+    pub address: String,
+    pub api_client: reqwest::Client,
+}
+
+impl TestApp {
+    pub fn endpoint(&self, path: &str) -> String {
+        format!("{}{}", self.address, path)
+    }
+
+    pub async fn post_action(
+        &self,
+        device_id: &str,
+        action: &str,
+        body: Option<&ActionRequest>,
+    ) -> reqwest::Response {
+        let request = self
+            .api_client
+            .post(self.endpoint(&format!("/devices/{device_id}/actions/{action}")));
+
+        let request = match body {
+            Some(body) => request.json(body),
+            None => request.json(&Option::<ActionRequest>::None),
+        };
+
+        request.send().await.expect("failed to execute request")
+    }
+
+    pub async fn get_job(&self, job_id: &str) -> reqwest::Response {
+        self.api_client
+            .get(self.endpoint(&format!("/jobs/{job_id}")))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
+    pub async fn cancel_job(&self, job_id: &str) -> reqwest::Response {
+        self.api_client
+            .delete(self.endpoint(&format!("/jobs/{job_id}")))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
+    pub async fn wait_for_job_status(&self, job_id: &str, status: JobStatus) -> Job {
+        for _ in 0..20 {
+            let response = self.get_job(job_id).await;
+            if response.status().is_success() {
+                let job: Job = response.json().await.expect("invalid job json");
+                if job.status == status {
+                    return job;
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        panic!("job {job_id} did not reach expected status");
+    }
+}
+
+pub async fn spawn_app() -> TestApp {
+    let app = build_router(test_config()).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind random port");
+    let port = listener
+        .local_addr()
+        .expect("failed to read local addr")
+        .port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("test server crashed");
+    });
+
+    TestApp {
+        address: format!("http://127.0.0.1:{port}"),
+        api_client: reqwest::Client::new(),
+    }
+}
+
+fn test_config() -> AppConfig {
+    AppConfig {
+        devices: vec![
+            Device {
+                id: "board-zeta".into(),
+                label: "J-Link Board".into(),
+                ssh: None,
+                jlink: Some(JlinkConfig {
+                    serial: "123456789".into(),
+                    device: "STM32H743".into(),
+                }),
+            },
+            Device {
+                id: "board-alpha".into(),
+                label: "Linux Board".into(),
+                ssh: Some(SshConfig {
+                    host: "192.168.1.100".into(),
+                    user: "root".into(),
+                    key: "~/.ssh/id_rsa".into(),
+                }),
+                jlink: None,
+            },
+            Device {
+                id: "board-mixed".into(),
+                label: "Full Dev Board".into(),
+                ssh: Some(SshConfig {
+                    host: "192.168.1.102".into(),
+                    user: "root".into(),
+                    key: "~/.ssh/id_lab".into(),
+                }),
+                jlink: Some(JlinkConfig {
+                    serial: "987654321".into(),
+                    device: "STM32H743".into(),
+                }),
+            },
+        ],
+    }
+}
