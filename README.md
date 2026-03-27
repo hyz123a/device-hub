@@ -19,8 +19,9 @@ Local-first device control plane scaffold for AI-assisted hardware workflows.
 cargo run -p device-hub-server
 ```
 
-3. Run the frontend in dev mode:
+3. Run the frontend in dev mode from the `frontend/` directory so Trunk picks up `frontend/Trunk.toml` and proxies `/devices`, `/jobs`, and `/ws` to the local server:
 
 ```bash
-trunk serve frontend/index.html
+cd frontend
+trunk serve --config Trunk.toml
 ```

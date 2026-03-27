@@ -1,0 +1,16 @@
+[serve]
+addresses = ["127.0.0.1"]
+port = 8089
+
+[[proxy]]
+backend = "http://127.0.0.1:3000/devices"
+rewrite = "/devices"
+
+[[proxy]]
+backend = "http://127.0.0.1:3000/jobs"
+rewrite = "/jobs"
+
+[[proxy]]
+backend = "ws://127.0.0.1:3000/ws"
+rewrite = "/ws"
+ws = true
