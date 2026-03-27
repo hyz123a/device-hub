@@ -8,6 +8,8 @@ use thiserror::Error;
 pub struct AppConfig {
     #[serde(default)]
     pub devices: Vec<Device>,
+    #[serde(default)]
+    pub ssh_program: Option<String>,
 }
 
 #[derive(Debug, Error)]

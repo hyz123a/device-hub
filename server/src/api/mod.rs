@@ -41,10 +41,8 @@ pub async fn start_action(
         .get(&device_id)
         .ok_or(AppError::DeviceNotFound)?;
     validate_action(&action, &device)?;
-    let job = state
-        .job_manager
-        .start(device.id.clone(), action, payload)
-        .await?;
+    validate_payload(&action, payload.as_ref())?;
+    let job = state.job_manager.start(device, action, payload).await?;
     Ok(Json(job))
 }
 
@@ -150,7 +148,9 @@ fn validate_action(action: &str, device: &device_hub_shared::Device) -> Result<(
             device.jlink.is_some()
         }
         _ => {
-            return Err(AppError::BadRequest(format!("unsupported action `{action}`")));
+            return Err(AppError::BadRequest(format!(
+                "unsupported action `{action}`"
+            )));
         }
     };
 
@@ -161,5 +161,19 @@ fn validate_action(action: &str, device: &device_hub_shared::Device) -> Result<(
             "device `{}` does not support action `{action}`",
             device.id
         )))
+    }
+}
+
+fn validate_payload(action: &str, payload: Option<&ActionRequest>) -> Result<(), AppError> {
+    let value = payload.and_then(|request| request.payload.as_ref());
+
+    match action {
+        "ssh.exec" if value.is_none_or(|command| command.trim().is_empty()) => Err(
+            AppError::BadRequest("action `ssh.exec` requires a command payload".into()),
+        ),
+        "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(AppError::BadRequest(
+            "action `ssh.tail` requires a log path payload".into(),
+        )),
+        _ => Ok(()),
     }
 }

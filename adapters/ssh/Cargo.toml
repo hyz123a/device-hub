@@ -8,3 +8,7 @@ license.workspace = true
 device-hub-shared = { path = "../../shared" }
 serde.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

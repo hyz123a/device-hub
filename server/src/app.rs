@@ -1,4 +1,8 @@
-use axum::{Router, routing::{get, post}};
+use axum::{
+    Router,
+    routing::{get, post},
+};
+use device_hub_adapter_ssh::SshAdapter;
 use tower_http::cors::CorsLayer;
 
 use crate::{
@@ -18,10 +22,18 @@ pub struct AppState {
 }
 
 pub async fn build_router(config: AppConfig) -> Router {
+    let AppConfig {
+        devices: configured_devices,
+        ssh_program,
+    } = config;
     let events = EventBus::new(1_000);
-    let devices = DeviceRegistry::new(config.devices);
+    let devices = DeviceRegistry::new(configured_devices);
     let jobs = JobStore::new();
-    let job_manager = JobManager::new(jobs.clone(), events.clone());
+    let ssh_adapter = match ssh_program {
+        Some(program) => SshAdapter::with_program(program),
+        None => SshAdapter::new(),
+    };
+    let job_manager = JobManager::new(jobs.clone(), events.clone(), ssh_adapter);
 
     let state = AppState {
         devices,
@@ -34,7 +46,10 @@ pub async fn build_router(config: AppConfig) -> Router {
         .route("/", get(api::root))
         .route("/devices", get(api::list_devices))
         .route("/devices/{device_id}", get(api::get_device))
-        .route("/devices/{device_id}/actions/{action}", post(api::start_action))
+        .route(
+            "/devices/{device_id}/actions/{action}",
+            post(api::start_action),
+        )
         .route("/jobs/{job_id}", get(api::get_job).delete(api::cancel_job))
         .route("/jobs/{job_id}/events", get(api::get_job_events))
         .route("/ws", get(api::ws_events))

@@ -43,7 +43,10 @@ async fn start_action_rejects_unsupported_action() {
 
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
     let body: serde_json::Value = response.json().await.expect("invalid error body");
-    assert_eq!(body["error"], "bad request: unsupported action `ssh.unknown`");
+    assert_eq!(
+        body["error"],
+        "bad request: unsupported action `ssh.unknown`"
+    );
 }
 
 #[tokio::test]
@@ -57,5 +60,33 @@ async fn start_action_rejects_action_not_supported_by_device_capabilities() {
     assert_eq!(
         body["error"],
         "bad request: device `board-zeta` does not support action `ssh.exec`"
+    );
+}
+
+#[tokio::test]
+async fn start_action_rejects_missing_payload_for_ssh_exec() {
+    let app = spawn_app().await;
+
+    let response = app.post_action("board-alpha", "ssh.exec", None).await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(
+        body["error"],
+        "bad request: action `ssh.exec` requires a command payload"
+    );
+}
+
+#[tokio::test]
+async fn start_action_rejects_missing_payload_for_ssh_tail() {
+    let app = spawn_app().await;
+
+    let response = app.post_action("board-alpha", "ssh.tail", None).await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(
+        body["error"],
+        "bad request: action `ssh.tail` requires a log path payload"
     );
 }

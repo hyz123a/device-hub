@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use device_hub_server::{app::build_router, config::AppConfig};
-use device_hub_shared::{ActionRequest, Device, JlinkConfig, Job, JobStatus, SshConfig};
+use device_hub_shared::{ActionRequest, Device, JlinkConfig, Job, JobStatus, LogEvent, SshConfig};
+use futures::StreamExt;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 pub struct TestApp {
     pub address: String,
@@ -11,6 +13,10 @@ pub struct TestApp {
 impl TestApp {
     pub fn endpoint(&self, path: &str) -> String {
         format!("{}{}", self.address, path)
+    }
+
+    pub fn ws_endpoint(&self, path: &str) -> String {
+        self.endpoint(path).replacen("http://", "ws://", 1)
     }
 
     pub async fn post_action(
@@ -47,6 +53,14 @@ impl TestApp {
             .expect("failed to execute request")
     }
 
+    pub async fn get_job_events(&self, job_id: &str) -> reqwest::Response {
+        self.api_client
+            .get(self.endpoint(&format!("/jobs/{job_id}/events")))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
     pub async fn wait_for_job_status(&self, job_id: &str, status: JobStatus) -> Job {
         for _ in 0..20 {
             let response = self.get_job(job_id).await;
@@ -64,8 +78,14 @@ impl TestApp {
     }
 }
 
+pub type TestWsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
 pub async fn spawn_app() -> TestApp {
-    let app = build_router(test_config()).await;
+    spawn_app_with_config(test_config()).await
+}
+
+pub async fn spawn_app_with_config(config: AppConfig) -> TestApp {
+    let app = build_router(config).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("failed to bind random port");
@@ -75,7 +95,9 @@ pub async fn spawn_app() -> TestApp {
         .port();
 
     tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("test server crashed");
+        axum::serve(listener, app)
+            .await
+            .expect("test server crashed");
     });
 
     TestApp {
@@ -120,5 +142,48 @@ fn test_config() -> AppConfig {
                 }),
             },
         ],
+        ssh_program: None,
     }
+}
+
+pub async fn wait_for_job_events(app: &TestApp, job_id: &str, expected: usize) -> Vec<LogEvent> {
+    for _ in 0..20 {
+        let response = app.get_job_events(job_id).await;
+        if response.status().is_success() {
+            let events: Vec<LogEvent> = response.json().await.expect("invalid job events json");
+            if events.len() >= expected {
+                return events;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    panic!("job {job_id} did not emit expected events");
+}
+
+pub async fn connect_ws(app: &TestApp, path: &str) -> TestWsStream {
+    let (stream, _) = connect_async(app.ws_endpoint(path))
+        .await
+        .expect("failed to connect websocket");
+    stream
+}
+
+pub async fn recv_ws_event(stream: &mut TestWsStream) -> LogEvent {
+    for _ in 0..20 {
+        if let Ok(Some(message)) =
+            tokio::time::timeout(Duration::from_millis(250), stream.next()).await
+        {
+            match message.expect("websocket receive error") {
+                Message::Text(text) => {
+                    return serde_json::from_str(&text).expect("invalid websocket log event json");
+                }
+                Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => continue,
+                Message::Close(frame) => panic!("websocket closed unexpectedly: {frame:?}"),
+                Message::Frame(_) => continue,
+            }
+        }
+    }
+
+    panic!("websocket did not emit expected event");
 }
