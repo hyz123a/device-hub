@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build a local-first device operations platform that unifies SSH access, generic J-Link actions, logs, and AI-callable workflows behind a Web UI and local HTTP server.
+Build a local-first device operations platform that unifies SSH access, serial logs, generic J-Link actions, logs, and AI-callable workflows behind a Web UI and local HTTP server.
 
 ## Recommended Project Layout
 
@@ -10,7 +10,7 @@ Build a local-first device operations platform that unifies SSH access, generic 
 device-hub/
   server/        # Rust axum local HTTP server
   shared/        # Shared Rust schemas and domain types
-  adapters/      # SSH and generic J-Link adapters
+  adapters/      # SSH, serial, and generic J-Link adapters
   frontend/      # Yew/WASM full frontend app
   docs/          # Architecture and implementation notes
   tools/         # Dev scripts, packaging helpers, local tooling
@@ -65,6 +65,10 @@ First adapters:
   - exec
   - reboot
   - log follow
+- `serial/`
+  - open
+  - log follow
+  - close
 - `jlink/`
   - probe
   - flash
@@ -112,7 +116,7 @@ Recommended first screens:
 
 Devices are declared in a YAML file loaded at startup. Changing the file requires a server restart; live reload is intentionally unsupported to avoid inconsistency while jobs are running.
 
-`ssh` and `jlink` are independent, optional capabilities. A device may have one or both depending on its role:
+`ssh`, `serial`, and `jlink` are independent, optional capabilities. A device may have any combination depending on its role:
 
 ```yaml
 # devices.yaml
@@ -125,17 +129,23 @@ devices:
       key: ~/.ssh/id_rsa
 
   - id: board-02
-    label: "Bare Metal Target"  # J-Link only — no OS, debug probe attached
+    label: "Bare Metal Target"  # Serial + J-Link — no OS, debug probe attached
+    serial:
+      port: /dev/ttyUSB0
+      baud: 115200
     jlink:
       serial: "123456789"
       device: STM32H743
 
   - id: board-03
-    label: "Full Dev Board"     # Both — Linux OS with debug probe
+    label: "Full Dev Board"     # SSH + serial + J-Link
     ssh:
       host: 192.168.1.102
       user: root
       key: $SSH_KEY_PATH        # supports $ENV_VAR substitution
+    serial:
+      port: /dev/ttyUSB1
+      baud: 115200
     jlink:
       serial: "987654321"
       device: STM32H743
@@ -188,6 +198,7 @@ Unify all logs into one event format:
 Primary sources:
 
 - `ssh`
+- `serial`
 - `jlink`
 - `system`
 - `job`
@@ -214,6 +225,7 @@ GET    /devices/{device_id}
 POST   /devices/{device_id}/actions/ssh.exec
 POST   /devices/{device_id}/actions/ssh.tail
 POST   /devices/{device_id}/actions/ssh.reboot
+POST   /devices/{device_id}/actions/serial.tail
 
 POST   /devices/{device_id}/actions/jlink.probe
 POST   /devices/{device_id}/actions/jlink.flash
@@ -228,7 +240,7 @@ DELETE /jobs/{job_id}
 WS     /ws
 ```
 
-`ssh.tail` follows the same job lifecycle as any other action; use `DELETE /jobs/{job_id}` to stop it.
+`ssh.tail` and `serial.tail` follow the same job lifecycle as any other action; use `DELETE /jobs/{job_id}` to stop them.
 
 ### WebSocket `/ws`
 
@@ -274,7 +286,7 @@ What Bazel would help with later:
 
 - `server/` keeps hardware and tool access local and controlled.
 - `shared/` makes server and UI speak the same typed protocol with zero duplication.
-- `adapters/` isolates SSH and J-Link complexity.
+- `adapters/` isolates SSH, serial, and J-Link complexity.
 - `frontend/` keeps the entire stack in Rust — no TypeScript/JSON schema drift.
 
 ## Near-Term Implementation Order
@@ -282,7 +294,8 @@ What Bazel would help with later:
 1. create `shared/` + `server/` skeleton together (`axum`, config loader, error types)
 2. add job manager and event bus to `server/` (types come from `shared/`)
 3. implement `adapters/ssh`
-4. implement `adapters/jlink` on top of `JLinkExe`
-5. scaffold `frontend/` with `trunk` + `yew` + `yew_router`, device list page
-6. build out remaining pages and live log viewer
-7. embed `frontend/dist/` into the server binary for single-binary distribution
+4. implement `adapters/serial`
+5. implement `adapters/jlink` on top of `JLinkExe`
+6. scaffold `frontend/` with `trunk` + `yew` + `yew_router`, device list page
+7. build out remaining pages and live log viewer
+8. embed `frontend/dist/` into the server binary for single-binary distribution
