@@ -90,3 +90,30 @@ async fn start_action_rejects_missing_payload_for_ssh_tail() {
         "bad request: action `ssh.tail` requires a log path payload"
     );
 }
+
+#[tokio::test]
+async fn start_action_creates_a_job_for_serial_tail() {
+    let app = spawn_app().await;
+
+    let response = app.post_action("board-alpha", "serial.tail", None).await;
+
+    assert!(response.status().is_success());
+    let job: Job = response.json().await.expect("invalid job json");
+    assert_eq!(job.device_id, "board-alpha");
+    assert_eq!(job.action, "serial.tail");
+    assert_eq!(job.status, JobStatus::Pending);
+}
+
+#[tokio::test]
+async fn start_action_rejects_serial_tail_for_device_without_serial() {
+    let app = spawn_app().await;
+
+    let response = app.post_action("board-zeta", "serial.tail", None).await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(
+        body["error"],
+        "bad request: device `board-zeta` does not support action `serial.tail`"
+    );
+}

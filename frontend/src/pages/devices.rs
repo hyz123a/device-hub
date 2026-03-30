@@ -65,6 +65,14 @@ fn view_device(device: Device) -> Html {
     let route = Route::DeviceDetail {
         device_id: device.id.clone(),
     };
+    let capability_labels = [
+        device.ssh.is_some().then_some("ssh"),
+        device.serial.is_some().then_some("serial"),
+        device.jlink.is_some().then_some("jlink"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
 
     html! {
         <div class="flex flex-col gap-3 border-t border-black/10 pt-3 first:border-t-0 first:pt-0 sm:flex-row sm:items-center sm:justify-between">
@@ -73,14 +81,21 @@ fn view_device(device: Device) -> Html {
                 <p class="m-0 font-mono text-sm text-ink-muted">{device.id.clone()}</p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
-                <span class="inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong">{
-                    match (device.ssh.is_some(), device.jlink.is_some()) {
-                        (true, true) => "ssh + jlink",
-                        (true, false) => "ssh",
-                        (false, true) => "jlink",
-                        (false, false) => "unconfigured",
+                <div class="flex flex-wrap items-center gap-2">
+                    {
+                        if capability_labels.is_empty() {
+                            html! {
+                                <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted">{"unconfigured"}</span>
+                            }
+                        } else {
+                            html! {
+                                for capability_labels.iter().map(|label| html! {
+                                    <span class="inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong">{*label}</span>
+                                })
+                            }
+                        }
                     }
-                }</span>
+                </div>
                 <Link<Route>
                     classes="text-sm font-medium text-accent-strong transition hover:text-accent"
                     to={route}

@@ -5,6 +5,7 @@ pub struct Device {
     pub id: String,
     pub label: String,
     pub ssh: Option<SshConfig>,
+    pub serial: Option<SerialConfig>,
     pub jlink: Option<JlinkConfig>,
 }
 
@@ -17,6 +18,7 @@ pub struct DeviceDetail {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeviceConnectionSummary {
     pub has_ssh: bool,
+    pub has_serial: bool,
     pub has_jlink: bool,
 }
 
@@ -25,6 +27,12 @@ pub struct SshConfig {
     pub host: String,
     pub user: String,
     pub key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SerialConfig {
+    pub port: String,
+    pub baud: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +47,7 @@ impl Device {
             device: self.clone(),
             capabilities: DeviceConnectionSummary {
                 has_ssh: self.ssh.is_some(),
+                has_serial: self.serial.is_some(),
                 has_jlink: self.jlink.is_some(),
             },
         }

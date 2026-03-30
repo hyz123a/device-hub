@@ -1,0 +1,12 @@
+[package]
+name = "device-hub-adapter-serial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+device-hub-shared = { path = "../../shared" }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-serial = "5"

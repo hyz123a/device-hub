@@ -1,7 +1,9 @@
 use std::{path::PathBuf, time::Duration};
 
 use device_hub_server::{app::build_router, config::AppConfig};
-use device_hub_shared::{ActionRequest, Device, JlinkConfig, Job, JobStatus, LogEvent, SshConfig};
+use device_hub_shared::{
+    ActionRequest, Device, JlinkConfig, Job, JobStatus, LogEvent, SerialConfig, SshConfig,
+};
 use futures::StreamExt;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
@@ -116,6 +118,7 @@ fn test_config() -> AppConfig {
                 id: "board-zeta".into(),
                 label: "J-Link Board".into(),
                 ssh: None,
+                serial: None,
                 jlink: Some(JlinkConfig {
                     serial: "123456789".into(),
                     device: "STM32H743".into(),
@@ -129,6 +132,10 @@ fn test_config() -> AppConfig {
                     user: "root".into(),
                     key: "~/.ssh/id_rsa".into(),
                 }),
+                serial: Some(SerialConfig {
+                    port: "/dev/ttyUSB0".into(),
+                    baud: 115200,
+                }),
                 jlink: None,
             },
             Device {
@@ -138,6 +145,10 @@ fn test_config() -> AppConfig {
                     host: "192.168.1.102".into(),
                     user: "root".into(),
                     key: "~/.ssh/id_lab".into(),
+                }),
+                serial: Some(SerialConfig {
+                    port: "/dev/ttyUSB1".into(),
+                    baud: 115200,
                 }),
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),

@@ -2,6 +2,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
+use device_hub_adapter_serial::SerialAdapter;
 use device_hub_adapter_ssh::SshAdapter;
 use tower_http::cors::CorsLayer;
 
@@ -38,7 +39,14 @@ pub async fn build_router(config: AppConfig) -> Router {
         Some(program) => SshAdapter::with_program(program),
         None => SshAdapter::new(),
     };
-    let job_manager = JobManager::new(jobs.clone(), events.clone(), artifacts.clone(), ssh_adapter);
+    let serial_adapter = SerialAdapter::new();
+    let job_manager = JobManager::new(
+        jobs.clone(),
+        events.clone(),
+        artifacts.clone(),
+        ssh_adapter,
+        serial_adapter,
+    );
 
     let state = AppState {
         devices,
@@ -52,6 +60,7 @@ pub async fn build_router(config: AppConfig) -> Router {
         .route("/", get(api::root))
         .route("/devices", get(api::list_devices))
         .route("/devices/{device_id}", get(api::get_device))
+        .route("/jobs", get(api::list_jobs))
         .route(
             "/devices/{device_id}/actions/{action}",
             post(api::start_action),
