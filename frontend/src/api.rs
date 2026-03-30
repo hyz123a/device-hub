@@ -33,6 +33,18 @@ pub async fn get_job(job_id: &str) -> Result<Job, String> {
     decode_json(response).await
 }
 
+pub async fn list_jobs(device_id: Option<&str>) -> Result<Vec<Job>, String> {
+    let query = device_id
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("?device_id={}", urlencoding::encode(value.trim())))
+        .unwrap_or_default();
+    let response = Request::get(&format!("{API_PREFIX}/jobs{query}"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
 pub async fn get_job_events(job_id: &str) -> Result<Vec<LogEvent>, String> {
     let response = Request::get(&format!("{API_PREFIX}/jobs/{job_id}/events"))
         .send()
@@ -54,6 +66,14 @@ pub async fn start_action(
     .send()
     .await
     .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn cancel_job(job_id: &str) -> Result<Job, String> {
+    let response = Request::delete(&format!("{API_PREFIX}/jobs/{job_id}"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
     decode_json(response).await
 }
 

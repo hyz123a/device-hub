@@ -1,4 +1,6 @@
-use device_hub_shared::{Device, DeviceConnectionSummary, DeviceDetail, JlinkConfig, SshConfig};
+use device_hub_shared::{
+    Device, DeviceConnectionSummary, DeviceDetail, JlinkConfig, SerialConfig, SshConfig,
+};
 
 use crate::helpers::spawn_app;
 
@@ -43,6 +45,10 @@ async fn get_device_returns_detail_for_known_device() {
                     user: "root".into(),
                     key: "~/.ssh/id_lab".into(),
                 }),
+                serial: Some(SerialConfig {
+                    port: "/dev/ttyUSB1".into(),
+                    baud: 115200,
+                }),
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),
                     device: "STM32H743".into(),
@@ -50,6 +56,7 @@ async fn get_device_returns_detail_for_known_device() {
             },
             capabilities: DeviceConnectionSummary {
                 has_ssh: true,
+                has_serial: true,
                 has_jlink: true,
             },
         }

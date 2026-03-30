@@ -4,6 +4,7 @@ use std::{
 };
 
 use chrono::Utc;
+use device_hub_adapter_serial::SerialAdapter;
 use device_hub_adapter_ssh::{SshAdapter, SshCommand, SshStreamChannel};
 use device_hub_shared::{
     ActionRequest, Device, Job, JobStatus, LogChannel, LogEvent, LogLevel, LogSource,
@@ -23,6 +24,7 @@ pub struct JobManager {
     events: EventBus,
     artifacts: ArtifactStore,
     ssh_adapter: SshAdapter,
+    serial_adapter: SerialAdapter,
     tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     device_locks: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -33,12 +35,14 @@ impl JobManager {
         events: EventBus,
         artifacts: ArtifactStore,
         ssh_adapter: SshAdapter,
+        serial_adapter: SerialAdapter,
     ) -> Self {
         Self {
             jobs,
             events,
             artifacts,
             ssh_adapter,
+            serial_adapter,
             tasks: Arc::new(Mutex::new(HashMap::new())),
             device_locks: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -78,6 +82,7 @@ impl JobManager {
         let events = self.events.clone();
         let artifacts = self.artifacts.clone();
         let ssh_adapter = self.ssh_adapter.clone();
+        let serial_adapter = self.serial_adapter.clone();
         let tasks = self.tasks.clone();
         let device_locks = self.device_locks.clone();
         let job_id = job.id.clone();
@@ -92,6 +97,7 @@ impl JobManager {
                 &events,
                 &artifacts,
                 &ssh_adapter,
+                &serial_adapter,
                 &job_id,
                 &device,
                 &action,
@@ -178,7 +184,7 @@ fn update_job_status(jobs: &JobStore, artifacts: &ArtifactStore, job_id: &str, s
 }
 
 fn action_requires_exclusive_lock(action: &str) -> bool {
-    !matches!(action, "ssh.tail")
+    !matches!(action, "ssh.tail" | "serial.tail")
 }
 
 fn release_device_lock(
@@ -210,6 +216,7 @@ async fn execute_action(
     events: &EventBus,
     artifacts: &ArtifactStore,
     ssh_adapter: &SshAdapter,
+    serial_adapter: &SerialAdapter,
     job_id: &str,
     device: &Device,
     action: &str,
@@ -228,6 +235,9 @@ async fn execute_action(
         }
         "ssh.tail" => {
             execute_ssh_tail(jobs, events, artifacts, ssh_adapter, &job, device, payload).await
+        }
+        "serial.tail" => {
+            execute_serial_tail(jobs, events, artifacts, serial_adapter, &job, device).await
         }
         _ => fail_job(
             jobs,
@@ -388,6 +398,59 @@ async fn execute_ssh_tail(
     }
 }
 
+async fn execute_serial_tail(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    serial_adapter: &SerialAdapter,
+    job: &Job,
+    device: &Device,
+) {
+    let Some(config) = device.serial.as_ref() else {
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing serial configuration",
+        );
+        return;
+    };
+
+    events.publish(adapter_event_with_source(
+        job,
+        LogSource::Serial,
+        LogChannel::System,
+        LogLevel::Info,
+        format!("tailing serial logs from {} @ {} baud", config.port, config.baud),
+    ));
+
+    match serial_adapter.tail_logs_stream(config).await {
+        Ok(mut session) => loop {
+            match session.next_chunk().await {
+                Ok(Some(chunk)) => events.publish(LogEvent {
+                    ts: Utc::now(),
+                    device_id: job.device_id.clone(),
+                    job_id: job.id.clone(),
+                    source: LogSource::Serial,
+                    channel: LogChannel::Stdout,
+                    level: LogLevel::Info,
+                    message: chunk.line,
+                }),
+                Ok(None) => {
+                    succeed_job(jobs, events, artifacts, job, "serial.tail completed");
+                    break;
+                }
+                Err(error) => {
+                    fail_job(jobs, events, artifacts, job, error.to_string());
+                    break;
+                }
+            }
+        },
+        Err(error) => fail_job(jobs, events, artifacts, job, error.to_string()),
+    }
+}
+
 fn publish_stream(events: &EventBus, job: &Job, channel: LogChannel, output: &str) {
     for line in output.lines().filter(|line| !line.is_empty()) {
         events.publish(adapter_event(job, channel.clone(), LogLevel::Info, line));
@@ -437,11 +500,21 @@ fn adapter_event(
     level: LogLevel,
     message: impl Into<String>,
 ) -> LogEvent {
+    adapter_event_with_source(job, LogSource::Ssh, channel, level, message)
+}
+
+fn adapter_event_with_source(
+    job: &Job,
+    source: LogSource,
+    channel: LogChannel,
+    level: LogLevel,
+    message: impl Into<String>,
+) -> LogEvent {
     LogEvent {
         ts: Utc::now(),
         device_id: job.device_id.clone(),
         job_id: job.id.clone(),
-        source: LogSource::Ssh,
+        source,
         channel,
         level,
         message: message.into(),

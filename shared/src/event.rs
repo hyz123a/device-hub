@@ -39,6 +39,7 @@ impl EventFilter {
 #[serde(rename_all = "snake_case")]
 pub enum LogSource {
     Ssh,
+    Serial,
     Jlink,
     System,
     Job,

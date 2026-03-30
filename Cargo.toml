@@ -3,6 +3,7 @@ members = [
     "server",
     "shared",
     "adapters/ssh",
+    "adapters/serial",
     "adapters/jlink",
     "frontend",
 ]

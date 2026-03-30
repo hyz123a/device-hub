@@ -10,6 +10,7 @@ pub enum ActionCapability {
     SshExec,
     SshTail,
     SshReboot,
+    SerialTail,
     JlinkProbe,
     JlinkFlash,
     JlinkVerify,

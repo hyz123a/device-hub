@@ -8,6 +8,7 @@ license.workspace = true
 axum.workspace = true
 chrono.workspace = true
 device-hub-adapter-jlink = { path = "../adapters/jlink" }
+device-hub-adapter-serial = { path = "../adapters/serial" }
 device-hub-adapter-ssh = { path = "../adapters/ssh" }
 device-hub-shared = { path = "../shared" }
 futures.workspace = true

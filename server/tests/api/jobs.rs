@@ -26,6 +26,7 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                 id: "board-zeta".into(),
                 label: "J-Link Board".into(),
                 ssh: None,
+                serial: None,
                 jlink: Some(JlinkConfig {
                     serial: "123456789".into(),
                     device: "STM32H743".into(),
@@ -39,6 +40,7 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                     user: "root".into(),
                     key,
                 }),
+                serial: None,
                 jlink: None,
             },
         ],
@@ -58,6 +60,7 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                     user: "root".into(),
                     key: key.clone(),
                 }),
+                serial: None,
                 jlink: None,
             },
             Device {
@@ -68,6 +71,7 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                     user: "root".into(),
                     key,
                 }),
+                serial: None,
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),
                     device: "STM32H743".into(),
@@ -88,6 +92,61 @@ async fn get_job_returns_404_for_unknown_job() {
     assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     let body: serde_json::Value = response.json().await.expect("invalid error body");
     assert_eq!(body["error"], "job not found");
+}
+
+#[tokio::test]
+async fn list_jobs_can_filter_by_device() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "case \"$*\" in *192.168.1.100*) sleep 5 ;; *192.168.1.102*) sleep 5 ;; esac",
+    );
+    let app = spawn_app_with_config(multi_ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let alpha_job: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.tail",
+            Some(&ActionRequest {
+                payload: Some("/var/log/alpha.log".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid alpha job json");
+
+    let mixed_job: Job = app
+        .post_action(
+            "board-mixed",
+            "ssh.tail",
+            Some(&ActionRequest {
+                payload: Some("/var/log/mixed.log".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid mixed job json");
+
+    let response = app
+        .api_client
+        .get(app.endpoint("/api/jobs?device_id=board-alpha"))
+        .send()
+        .await
+        .expect("failed to execute request");
+
+    assert!(response.status().is_success());
+    let jobs: Vec<Job> = response.json().await.expect("invalid jobs json");
+    assert!(jobs.iter().any(|job| job.id == alpha_job.id));
+    assert!(!jobs.iter().any(|job| job.id == mixed_job.id));
+
+    assert!(app.cancel_job(&alpha_job.id).await.status().is_success());
+    assert!(app.cancel_job(&mixed_job.id).await.status().is_success());
 }
 
 #[tokio::test]

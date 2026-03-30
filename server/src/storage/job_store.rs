@@ -31,6 +31,18 @@ impl JobStore {
             .cloned()
     }
 
+    pub fn list(&self) -> Vec<Job> {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .expect("job store poisoned")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        jobs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        jobs
+    }
+
     pub fn update_status(&self, id: &str, status: JobStatus) -> Option<Job> {
         let mut jobs = self.jobs.lock().expect("job store poisoned");
         let job = jobs.get_mut(id)?;

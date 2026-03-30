@@ -20,6 +20,22 @@ pub async fn list_devices(State(state): State<AppState>) -> Json<Vec<device_hub_
     Json(state.devices.list())
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct ListJobsQuery {
+    pub device_id: Option<String>,
+}
+
+pub async fn list_jobs(
+    State(state): State<AppState>,
+    Query(query): Query<ListJobsQuery>,
+) -> Json<Vec<Job>> {
+    let mut jobs = state.jobs.list();
+    if let Some(device_id) = query.device_id {
+        jobs.retain(|job| job.device_id == device_id);
+    }
+    Json(jobs)
+}
+
 pub async fn get_device(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -152,6 +168,7 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, state: AppState, fi
 fn validate_action(action: &str, device: &device_hub_shared::Device) -> Result<(), AppError> {
     let supported = match action {
         "ssh.exec" | "ssh.tail" | "ssh.reboot" => device.ssh.is_some(),
+        "serial.tail" => device.serial.is_some(),
         "jlink.probe" | "jlink.flash" | "jlink.verify" | "jlink.reset" | "jlink.erase" => {
             device.jlink.is_some()
         }

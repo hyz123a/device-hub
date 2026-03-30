@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chrono.workspace = true
 device-hub-shared = { path = "../shared" }
 gloo-net.workspace = true
 serde.workspace = true
