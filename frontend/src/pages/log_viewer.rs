@@ -13,9 +13,12 @@ struct WsBindings {
     _on_close: Closure<dyn FnMut(Event)>,
 }
 
+const EVENT_PAGE_SIZE: usize = 50;
+
 #[function_component(LogViewerPage)]
 pub fn log_viewer_page() -> Html {
     let events = use_state(Vec::<LogEvent>::new);
+    let current_page = use_state(|| 0_usize);
     let event_store = use_mut_ref(Vec::<LogEvent>::new);
     let device_filter = use_state(String::new);
     let job_filter = use_state(String::new);
@@ -26,6 +29,7 @@ pub fn log_viewer_page() -> Html {
 
     {
         let events = events.clone();
+        let current_page = current_page.clone();
         let event_store = event_store.clone();
         let device_filter = device_filter.clone();
         let job_filter = job_filter.clone();
@@ -40,6 +44,7 @@ pub fn log_viewer_page() -> Html {
             connection.set("connecting".to_owned());
             error.set(None);
             events.set(Vec::new());
+            current_page.set(0);
             *event_store.borrow_mut() = Vec::new();
 
             match api::ws_url(Some(&device_filter), Some(&job_filter)) {
@@ -154,6 +159,22 @@ pub fn log_viewer_page() -> Html {
         "connecting" => "status status-warn",
         _ => "status status-muted",
     };
+    let total_events = events.len();
+    let total_pages = total_events.max(1).div_ceil(EVENT_PAGE_SIZE);
+    let page = (*current_page).min(total_pages.saturating_sub(1));
+    let end_index = total_events.saturating_sub(page * EVENT_PAGE_SIZE);
+    let start_index = end_index.saturating_sub(EVENT_PAGE_SIZE);
+    let shown_events = end_index.saturating_sub(start_index);
+
+    let on_show_older = {
+        let current_page = current_page.clone();
+        Callback::from(move |_| current_page.set(*current_page + 1))
+    };
+
+    let on_show_newer = {
+        let current_page = current_page.clone();
+        Callback::from(move |_| current_page.set(current_page.saturating_sub(1)))
+    };
 
     html! {
         <section class="grid">
@@ -186,12 +207,19 @@ pub fn log_viewer_page() -> Html {
                 }
             </article>
             <article class="card" style="grid-column: 1 / -1;">
+                <div class="log-pagination">
+                    <span class="muted mono">{format!("page {} / {} · showing {} of {}", page + 1, total_pages, shown_events, total_events)}</span>
+                    <div class="log-pagination-actions">
+                        <button class="button button-secondary" onclick={on_show_newer} disabled={page == 0}>{"Newer"}</button>
+                        <button class="button button-secondary" onclick={on_show_older} disabled={start_index == 0 || total_events == 0}>{"Older"}</button>
+                    </div>
+                </div>
                 <div class="timeline">
                     {
                         if events.is_empty() {
                             html! { <p class="muted">{"Waiting for live events..."}</p> }
                         } else {
-                            html! { for (*events).iter().rev().map(view_event) }
+                            html! { for (*events)[start_index..].iter().rev().map(view_event) }
                         }
                     }
                 </div>

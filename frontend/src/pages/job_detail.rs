@@ -19,10 +19,13 @@ struct WsBindings {
     _on_close: Closure<dyn FnMut(Event)>,
 }
 
+const EVENT_PAGE_SIZE: usize = 50;
+
 #[function_component(JobDetailPage)]
 pub fn job_detail_page(props: &JobDetailProps) -> Html {
     let job = use_state(|| Option::<Job>::None);
     let events = use_state(Vec::<LogEvent>::new);
+    let current_page = use_state(|| 0_usize);
     let event_store = use_mut_ref(Vec::<LogEvent>::new);
     let error = use_state(|| Option::<String>::None);
     let connection = use_state(|| "connecting".to_owned());
@@ -31,6 +34,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
     {
         let job = job.clone();
         let events = events.clone();
+        let current_page = current_page.clone();
         let event_store = event_store.clone();
         let error = error.clone();
         let connection = connection.clone();
@@ -42,6 +46,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
             }
 
             events.set(Vec::new());
+            current_page.set(0);
             *event_store.borrow_mut() = Vec::new();
             error.set(None);
             connection.set("connecting".to_owned());
@@ -163,6 +168,22 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
         "connecting" => "status status-warn",
         _ => "status status-muted",
     };
+    let total_events = events.len();
+    let total_pages = total_events.max(1).div_ceil(EVENT_PAGE_SIZE);
+    let page = (*current_page).min(total_pages.saturating_sub(1));
+    let end_index = total_events.saturating_sub(page * EVENT_PAGE_SIZE);
+    let start_index = end_index.saturating_sub(EVENT_PAGE_SIZE);
+    let shown_events = end_index.saturating_sub(start_index);
+
+    let on_show_older = {
+        let current_page = current_page.clone();
+        Callback::from(move |_| current_page.set(*current_page + 1))
+    };
+
+    let on_show_newer = {
+        let current_page = current_page.clone();
+        Callback::from(move |_| current_page.set(current_page.saturating_sub(1)))
+    };
 
     html! {
         <section class="grid">
@@ -189,12 +210,19 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
             </article>
             <article class="card">
                 <span class="eyebrow">{"Events"}</span>
+                <div class="log-pagination">
+                    <span class="muted mono">{format!("page {} / {} · showing {} of {}", page + 1, total_pages, shown_events, total_events)}</span>
+                    <div class="log-pagination-actions">
+                        <button class="button button-secondary" onclick={on_show_newer} disabled={page == 0}>{"Newer"}</button>
+                        <button class="button button-secondary" onclick={on_show_older} disabled={start_index == 0 || total_events == 0}>{"Older"}</button>
+                    </div>
+                </div>
                 <div class="timeline">
                     {
                         if events.is_empty() {
                             html! { <p class="muted">{"Waiting for job events..."}</p> }
                         } else {
-                            html! { for (*events).iter().rev().map(view_event) }
+                            html! { for (*events)[start_index..].iter().rev().map(view_event) }
                         }
                     }
                 </div>

@@ -1,46 +1,74 @@
-use device_hub_shared::{Device, DeviceDetail, Job, LogEvent};
-use gloo_net::http::Request;
+use device_hub_shared::{ActionRequest, Device, DeviceDetail, Job, LogEvent};
+use gloo_net::http::{Request, Response};
+use serde::Deserialize;
 
 const API_PREFIX: &str = "/api";
 
+#[derive(Deserialize)]
+struct ErrorBody {
+    error: String,
+}
+
 pub async fn list_devices() -> Result<Vec<Device>, String> {
-    Request::get(&format!("{API_PREFIX}/devices"))
+    let response = Request::get(&format!("{API_PREFIX}/devices"))
         .send()
         .await
-        .map_err(|err| err.to_string())?
-        .json()
-        .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
 }
 
 pub async fn get_device(device_id: &str) -> Result<DeviceDetail, String> {
-    Request::get(&format!("{API_PREFIX}/devices/{device_id}"))
+    let response = Request::get(&format!("{API_PREFIX}/devices/{device_id}"))
         .send()
         .await
-        .map_err(|err| err.to_string())?
-        .json()
-        .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
 }
 
 pub async fn get_job(job_id: &str) -> Result<Job, String> {
-    Request::get(&format!("{API_PREFIX}/jobs/{job_id}"))
+    let response = Request::get(&format!("{API_PREFIX}/jobs/{job_id}"))
         .send()
         .await
-        .map_err(|err| err.to_string())?
-        .json()
-        .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
 }
 
 pub async fn get_job_events(job_id: &str) -> Result<Vec<LogEvent>, String> {
-    Request::get(&format!("{API_PREFIX}/jobs/{job_id}/events"))
+    let response = Request::get(&format!("{API_PREFIX}/jobs/{job_id}/events"))
         .send()
         .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn start_action(
+    device_id: &str,
+    action: &str,
+    payload: Option<String>,
+) -> Result<Job, String> {
+    let response = Request::post(&format!("{API_PREFIX}/devices/{device_id}/actions/{action}"))
+        .json(&Some(ActionRequest { payload }))
         .map_err(|err| err.to_string())?
-        .json()
+        .send()
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+async fn decode_json<T>(response: Response) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    if response.ok() {
+        response.json().await.map_err(|err| err.to_string())
+    } else {
+        let status = response.status();
+        let body = response.text().await.map_err(|err| err.to_string())?;
+        match serde_json::from_str::<ErrorBody>(&body) {
+            Ok(error) => Err(error.error),
+            Err(_) => Err(format!("request failed with status {status}: {body}")),
+        }
+    }
 }
 
 pub fn ws_url(device_id: Option<&str>, job_id: Option<&str>) -> Result<String, String> {
