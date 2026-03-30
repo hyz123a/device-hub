@@ -166,7 +166,7 @@ Sensitive fields (passwords, key paths) support `$ENV_VAR` substitution to avoid
 - Every stateful or long-running action becomes a job, including `ssh.tail`.
 - API returns a `job_id` immediately.
 - Execution progress and logs flow through a unified event stream.
-- Jobs are cancelled via `DELETE /jobs/{job_id}`; the server signals the adapter to stop and transitions the job to `cancelled`.
+- Jobs are cancelled via `DELETE /api/jobs/{job_id}`; the server signals the adapter to stop and transitions the job to `cancelled`.
 
 Job states:
 
@@ -219,37 +219,38 @@ Primary sources:
 ## API Shape
 
 ```text
-GET    /devices
-GET    /devices/{device_id}
+GET    /api/devices
+GET    /api/devices/{device_id}
 
-POST   /devices/{device_id}/actions/ssh.exec
-POST   /devices/{device_id}/actions/ssh.tail
-POST   /devices/{device_id}/actions/ssh.reboot
-POST   /devices/{device_id}/actions/serial.tail
+POST   /api/devices/{device_id}/actions/ssh.exec
+POST   /api/devices/{device_id}/actions/ssh.tail
+POST   /api/devices/{device_id}/actions/ssh.reboot
+POST   /api/devices/{device_id}/actions/serial.tail
 
-POST   /devices/{device_id}/actions/jlink.probe
-POST   /devices/{device_id}/actions/jlink.flash
-POST   /devices/{device_id}/actions/jlink.verify
-POST   /devices/{device_id}/actions/jlink.reset
-POST   /devices/{device_id}/actions/jlink.erase
+POST   /api/devices/{device_id}/actions/jlink.probe
+POST   /api/devices/{device_id}/actions/jlink.flash
+POST   /api/devices/{device_id}/actions/jlink.verify
+POST   /api/devices/{device_id}/actions/jlink.reset
+POST   /api/devices/{device_id}/actions/jlink.erase
 
-GET    /jobs/{job_id}
-GET    /jobs/{job_id}/events
-DELETE /jobs/{job_id}
+GET    /api/jobs/{job_id}
+GET    /api/jobs/{job_id}/events
+DELETE /api/jobs/{job_id}
 
-WS     /ws
+GET    /api
+WS     /api/ws
 ```
 
-`ssh.tail` and `serial.tail` follow the same job lifecycle as any other action; use `DELETE /jobs/{job_id}` to stop them.
+`ssh.tail` and `serial.tail` follow the same job lifecycle as any other action; use `DELETE /api/jobs/{job_id}` to stop them.
 
-### WebSocket `/ws`
+### WebSocket `/api/ws`
 
 Subscribe to event streams via query parameters:
 
 ```text
-WS /ws                            # all events
-WS /ws?device_id=board-01         # events for one device
-WS /ws?job_id=job_123             # events for one job
+WS /api/ws                            # all events
+WS /api/ws?device_id=board-01         # events for one device
+WS /api/ws?job_id=job_123             # events for one job
 ```
 
 - Server pushes `LogEvent` JSON frames.

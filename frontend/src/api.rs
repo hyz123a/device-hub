@@ -1,8 +1,10 @@
 use device_hub_shared::{Device, DeviceDetail, Job, LogEvent};
 use gloo_net::http::Request;
 
+const API_PREFIX: &str = "/api";
+
 pub async fn list_devices() -> Result<Vec<Device>, String> {
-    Request::get("/devices")
+    Request::get(&format!("{API_PREFIX}/devices"))
         .send()
         .await
         .map_err(|err| err.to_string())?
@@ -12,7 +14,7 @@ pub async fn list_devices() -> Result<Vec<Device>, String> {
 }
 
 pub async fn get_device(device_id: &str) -> Result<DeviceDetail, String> {
-    Request::get(&format!("/devices/{device_id}"))
+    Request::get(&format!("{API_PREFIX}/devices/{device_id}"))
         .send()
         .await
         .map_err(|err| err.to_string())?
@@ -22,7 +24,7 @@ pub async fn get_device(device_id: &str) -> Result<DeviceDetail, String> {
 }
 
 pub async fn get_job(job_id: &str) -> Result<Job, String> {
-    Request::get(&format!("/jobs/{job_id}"))
+    Request::get(&format!("{API_PREFIX}/jobs/{job_id}"))
         .send()
         .await
         .map_err(|err| err.to_string())?
@@ -32,7 +34,7 @@ pub async fn get_job(job_id: &str) -> Result<Job, String> {
 }
 
 pub async fn get_job_events(job_id: &str) -> Result<Vec<LogEvent>, String> {
-    Request::get(&format!("/jobs/{job_id}/events"))
+    Request::get(&format!("{API_PREFIX}/jobs/{job_id}/events"))
         .send()
         .await
         .map_err(|err| err.to_string())?
@@ -69,5 +71,5 @@ pub fn ws_url(device_id: Option<&str>, job_id: Option<&str>) -> Result<String, S
         format!("?{}", params.join("&"))
     };
 
-    Ok(format!("{scheme}://{host}/ws{query}"))
+    Ok(format!("{scheme}://{host}{API_PREFIX}/ws{query}"))
 }

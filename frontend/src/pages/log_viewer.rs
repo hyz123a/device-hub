@@ -1,5 +1,5 @@
 use device_hub_shared::{LogChannel, LogEvent, LogLevel};
-use wasm_bindgen::{JsCast, closure::Closure};
+use wasm_bindgen::{closure::Closure, JsCast};
 use web_sys::{ErrorEvent, Event, HtmlInputElement, MessageEvent, WebSocket};
 use yew::prelude::*;
 
@@ -16,6 +16,7 @@ struct WsBindings {
 #[function_component(LogViewerPage)]
 pub fn log_viewer_page() -> Html {
     let events = use_state(Vec::<LogEvent>::new);
+    let event_store = use_mut_ref(Vec::<LogEvent>::new);
     let device_filter = use_state(String::new);
     let job_filter = use_state(String::new);
     let connection = use_state(|| "connecting".to_owned());
@@ -25,6 +26,7 @@ pub fn log_viewer_page() -> Html {
 
     {
         let events = events.clone();
+        let event_store = event_store.clone();
         let device_filter = device_filter.clone();
         let job_filter = job_filter.clone();
         let connection = connection.clone();
@@ -38,6 +40,7 @@ pub fn log_viewer_page() -> Html {
             connection.set("connecting".to_owned());
             error.set(None);
             events.set(Vec::new());
+            *event_store.borrow_mut() = Vec::new();
 
             match api::ws_url(Some(&device_filter), Some(&job_filter)) {
                 Ok(url) => match WebSocket::new(&url) {
@@ -50,18 +53,29 @@ pub fn log_viewer_page() -> Html {
                         ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
 
                         let message_events = events.clone();
+                        let message_store = event_store.clone();
                         let message_error = error.clone();
                         let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
                             if let Some(text) = event.data().as_string() {
                                 match serde_json::from_str::<LogEvent>(&text) {
                                     Ok(log_event) => {
-                                        let mut next = (*message_events).clone();
-                                        next.push(log_event);
-                                        if next.len() > 200 {
-                                            let drain = next.len() - 200;
-                                            next.drain(0..drain);
+                                        let mut next = message_store.borrow_mut();
+                                        if !next.iter().any(|existing| {
+                                            existing.ts == log_event.ts
+                                                && existing.device_id == log_event.device_id
+                                                && existing.job_id == log_event.job_id
+                                                && existing.source == log_event.source
+                                                && existing.channel == log_event.channel
+                                                && existing.level == log_event.level
+                                                && existing.message == log_event.message
+                                        }) {
+                                            next.push(log_event);
+                                            if next.len() > 200 {
+                                                let drain = next.len() - 200;
+                                                next.drain(0..drain);
+                                            }
+                                            message_events.set(next.clone());
                                         }
-                                        message_events.set(next);
                                     }
                                     Err(parse_error) => {
                                         message_error.set(Some(parse_error.to_string()));
@@ -146,7 +160,8 @@ pub fn log_viewer_page() -> Html {
             <article class="card" style="grid-column: 1 / -1;">
                 <span class="eyebrow">{"Live logs"}</span>
                 <h2>{"WebSocket event stream"}</h2>
-                <p class="muted">{"Subscribe to all events or narrow the stream to one device or one job. Reconnect after changing filters to open a new `/ws` subscription."}</p>
+                <p class="muted">{"Subscribe to all events or narrow the stream to one device or one job. Reconnect after changing filters to open a new `/api/ws` subscription."}</p>
+                <p class="muted">{"Filters are combined: when both fields are set, events must match both device and job."}</p>
                 <div class="log-toolbar">
                     <label class="field">
                         <span>{"Device filter"}</span>
