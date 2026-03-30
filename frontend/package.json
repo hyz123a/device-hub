@@ -1,0 +1,10 @@
+{
+  "name": "device-hub-frontend",
+  "private": true,
+  "scripts": {
+    "build:css": "tailwindcss -i ./tailwind.css -o ./style.css"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

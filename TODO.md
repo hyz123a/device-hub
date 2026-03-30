@@ -14,5 +14,15 @@
 - [x] Show stdout, stderr, and system events more clearly in the job and live-log views
 - [x] Implement device locking in the server so conflicting actions return `409` with the holding job ID
 - [x] Add API integration tests for device lock conflicts and job cancellation semantics
-- [ ] Persist job output artifacts as `job.json` + `events.ndjson` so completed runs remain inspectable outside the live event buffer
+- [x] Persist job output artifacts as `job.json` + `events.ndjson` so completed runs remain inspectable outside the live event buffer
 - [ ] Add artifact export/download flow for completed jobs
+- [x] Migrate `frontend` styling to Tailwind CSS by scanning `frontend/src/**/*.rs`, compiling a generated stylesheet, and switching `frontend/index.html` to load it
+- [ ] Add `serial` support to the shared schema, device detail page, and server action routing so `serial.tail` becomes a first-class job like `ssh.tail`
+- [ ] Implement a `device-hub-adapter-serial` crate with bounded log streaming, cancellation support, and unified `LogEvent` emission
+- [ ] Add J-Link action endpoints and UI controls for `jlink.probe`, `jlink.flash`, `jlink.verify`, and `jlink.reset`
+- [ ] Extend the J-Link adapter to return structured result payloads and artifact files instead of relying only on raw tool text
+- [ ] Add per-action timeout and safe teardown policies in the job runner so failed or cancelled jobs leave devices in a known state
+- [ ] Surface richer job evidence in the Web UI, including artifact lists, download links, and action-specific summaries for AI/human diagnosis
+- [ ] Add an API/UI flow to rerun a previous job with the same device, action, and arguments to tighten the harness-debug loop
+- [ ] Add server and integration tests covering serial streaming, J-Link job lifecycle, timeout handling, and artifact persistence
+- [ ] Embed `frontend/dist` into `server` for single-binary local distribution

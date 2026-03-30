@@ -165,9 +165,9 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
     }
 
     let status_class = match connection.as_str() {
-        "connected" => "status status-ok",
-        "connecting" => "status status-warn",
-        _ => "status status-muted",
+        "connected" => "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong",
+        "connecting" => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
+        _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
     };
     let total_events = events.len();
     let total_pages = total_events.max(1).div_ceil(EVENT_PAGE_SIZE);
@@ -187,26 +187,26 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
     };
 
     html! {
-        <section class="grid">
-            <article class="card">
-                <span class="eyebrow">{"Job"}</span>
+        <section class="grid gap-5 xl:grid-cols-2">
+            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur">
+                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Job"}</span>
                 {
                     if let Some(message) = (*error).clone() {
-                        html! { <p>{message}</p> }
+                        html! { <p class="mb-0 mt-4 text-sm text-red-700">{message}</p> }
                     } else if let Some(job) = (*job).clone() {
                         let job_id = job.id.clone();
                         html! {
                             <>
-                                <h2>{job.action}</h2>
-                                <p class="mono muted">{job_id.clone()}</p>
-                                <div class="log-meta">
+                                <h2 class="mb-2 mt-3 text-3xl font-semibold tracking-tight text-ink">{job.action}</h2>
+                                <p class="m-0 font-mono text-sm text-ink-muted">{job_id.clone()}</p>
+                                <div class="mt-4 flex flex-wrap items-center gap-3">
                                     <span class={job_status_class(&job.status)}>{format!("{:?}", job.status)}</span>
                                     <span class={status_class}>{(*connection).clone()}</span>
                                 </div>
                                 {
                                     if is_terminal_status(&job.status) {
                                         html! {
-                                            <p class="muted">
+                                            <p class="mb-0 mt-4 text-ink-muted">
                                                 {"Artifacts are persisted on the server as "}
                                                 <code>{format!("jobs/{}/job.json", job_id)}</code>
                                                 {" and "}
@@ -216,7 +216,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                                         }
                                     } else {
                                         html! {
-                                            <p class="muted">
+                                            <p class="mb-0 mt-4 text-ink-muted">
                                                 {"Live events stream below. Completed jobs keep "}
                                                 <code>{"job.json"}</code>
                                                 {" and "}
@@ -229,23 +229,23 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                             </>
                         }
                     } else {
-                        html! { <p>{"Loading job..."}</p> }
+                        html! { <p class="mb-0 mt-4 text-ink-muted">{"Loading job..."}</p> }
                     }
                 }
             </article>
-            <article class="card">
-                <span class="eyebrow">{"Events"}</span>
-                <div class="log-pagination">
-                    <span class="muted mono">{format!("page {} / {} · showing {} of {}", page + 1, total_pages, shown_events, total_events)}</span>
-                    <div class="log-pagination-actions">
-                        <button class="button button-secondary" onclick={on_show_newer} disabled={page == 0}>{"Newer"}</button>
-                        <button class="button button-secondary" onclick={on_show_older} disabled={start_index == 0 || total_events == 0}>{"Older"}</button>
+            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur">
+                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Events"}</span>
+                <div class="mb-5 mt-4 flex flex-wrap items-center justify-between gap-3">
+                    <span class="font-mono text-sm text-ink-muted">{format!("page {} / {} · showing {} of {}", page + 1, total_pages, shown_events, total_events)}</span>
+                    <div class="flex flex-wrap gap-2.5">
+                        <button class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55" onclick={on_show_newer} disabled={page == 0}>{"Newer"}</button>
+                        <button class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55" onclick={on_show_older} disabled={start_index == 0 || total_events == 0}>{"Older"}</button>
                     </div>
                 </div>
-                <div class="timeline">
+                <div class="grid gap-4">
                     {
                         if events.is_empty() {
-                            html! { <p class="muted">{"Waiting for job events..."}</p> }
+                            html! { <p class="m-0 text-ink-muted">{"Waiting for job events..."}</p> }
                         } else {
                             html! {
                                 for (*events)[start_index..]
@@ -264,10 +264,10 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
 
 fn job_status_class(status: &JobStatus) -> &'static str {
     match status {
-        JobStatus::Succeeded => "status status-ok",
-        JobStatus::Failed => "status status-error",
-        JobStatus::Cancelled => "status status-muted",
-        JobStatus::Pending | JobStatus::Running => "status status-warn",
+        JobStatus::Succeeded => "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong",
+        JobStatus::Failed => "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700",
+        JobStatus::Cancelled => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
+        JobStatus::Pending | JobStatus::Running => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
     }
 }
 

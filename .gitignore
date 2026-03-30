@@ -2,6 +2,7 @@ tmp/
 .artifacts
 target/
 frontend/dist/
+frontend/node_modules/
 bazel-*/
 bazel-bin
 bazel-out
