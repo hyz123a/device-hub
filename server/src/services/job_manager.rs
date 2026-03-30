@@ -19,6 +19,7 @@ pub struct JobManager {
     events: EventBus,
     ssh_adapter: SshAdapter,
     tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    device_locks: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl JobManager {
@@ -28,6 +29,7 @@ impl JobManager {
             events,
             ssh_adapter,
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            device_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -47,6 +49,11 @@ impl JobManager {
             updated_at: now,
         };
 
+        let has_exclusive_lock = action_requires_exclusive_lock(&action);
+        if has_exclusive_lock {
+            self.try_acquire_device_lock(&device.id, &job.id)?;
+        }
+
         self.jobs.insert(job.clone());
         self.events.publish(job_event(&job, "job accepted"));
 
@@ -54,6 +61,7 @@ impl JobManager {
         let events = self.events.clone();
         let ssh_adapter = self.ssh_adapter.clone();
         let tasks = self.tasks.clone();
+        let device_locks = self.device_locks.clone();
         let job_id = job.id.clone();
         let handle = tokio::spawn(async move {
             jobs.update_status(&job_id, JobStatus::Running);
@@ -72,6 +80,10 @@ impl JobManager {
             )
             .await;
 
+            if has_exclusive_lock {
+                release_device_lock(&device_locks, &device.id, &job_id);
+            }
+
             tasks
                 .lock()
                 .expect("job task registry poisoned")
@@ -87,6 +99,16 @@ impl JobManager {
     }
 
     pub async fn cancel(&self, job_id: &str) -> Result<Job, AppError> {
+        let job = self.jobs.get(job_id).ok_or(AppError::JobNotFound)?;
+        if matches!(
+            job.status,
+            JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled
+        ) {
+            return Err(AppError::JobNotCancellable(
+                job_status_label(&job.status).to_owned(),
+            ));
+        }
+
         let handle = self
             .tasks
             .lock()
@@ -97,12 +119,59 @@ impl JobManager {
             handle.abort();
         }
 
+        if action_requires_exclusive_lock(&job.action) {
+            release_device_lock(&self.device_locks, &job.device_id, job_id);
+        }
+
         let job = self
             .jobs
             .update_status(job_id, JobStatus::Cancelled)
             .ok_or(AppError::JobNotFound)?;
         self.events.publish(job_event(&job, "job cancelled"));
         Ok(job)
+    }
+
+    fn try_acquire_device_lock(&self, device_id: &str, job_id: &str) -> Result<(), AppError> {
+        let mut locks = self
+            .device_locks
+            .lock()
+            .expect("device lock registry poisoned");
+        if let Some(held_by_job_id) = locks.get(device_id) {
+            return Err(AppError::DeviceLocked {
+                held_by_job_id: held_by_job_id.clone(),
+            });
+        }
+
+        locks.insert(device_id.to_owned(), job_id.to_owned());
+        Ok(())
+    }
+}
+
+fn action_requires_exclusive_lock(action: &str) -> bool {
+    !matches!(action, "ssh.tail")
+}
+
+fn release_device_lock(
+    device_locks: &Arc<Mutex<HashMap<String, String>>>,
+    device_id: &str,
+    job_id: &str,
+) {
+    let mut locks = device_locks.lock().expect("device lock registry poisoned");
+    if locks
+        .get(device_id)
+        .is_some_and(|held_by_job_id| held_by_job_id == job_id)
+    {
+        locks.remove(device_id);
+    }
+}
+
+fn job_status_label(status: &JobStatus) -> &'static str {
+    match status {
+        JobStatus::Pending => "pending",
+        JobStatus::Running => "running",
+        JobStatus::Succeeded => "succeeded",
+        JobStatus::Failed => "failed",
+        JobStatus::Cancelled => "cancelled",
     }
 }
 

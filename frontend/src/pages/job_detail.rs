@@ -1,10 +1,11 @@
-use device_hub_shared::{Job, JobStatus, LogChannel, LogEvent, LogLevel};
+use device_hub_shared::{Job, JobStatus, LogEvent};
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{ErrorEvent, Event, MessageEvent, WebSocket};
 use yew::prelude::*;
 
 use crate::api;
+use crate::components::log_event::LogEventCard;
 
 #[derive(Properties, PartialEq)]
 pub struct JobDetailProps {
@@ -222,7 +223,13 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                         if events.is_empty() {
                             html! { <p class="muted">{"Waiting for job events..."}</p> }
                         } else {
-                            html! { for (*events)[start_index..].iter().rev().map(view_event) }
+                            html! {
+                                for (*events)[start_index..]
+                                    .iter()
+                                    .rev()
+                                    .cloned()
+                                    .map(|event| html! { <LogEventCard event={event} /> })
+                            }
                         }
                     }
                 </div>
@@ -237,38 +244,6 @@ fn job_status_class(status: &JobStatus) -> &'static str {
         JobStatus::Failed => "status status-error",
         JobStatus::Cancelled => "status status-muted",
         JobStatus::Pending | JobStatus::Running => "status status-warn",
-    }
-}
-
-fn view_event(event: &LogEvent) -> Html {
-    let level_class = match event.level {
-        LogLevel::Error => "status status-error",
-        LogLevel::Warn => "status status-warn",
-        LogLevel::Info => "status status-ok",
-        LogLevel::Debug => "status status-muted",
-    };
-
-    html! {
-        <div class="log-entry">
-            <div class="log-entry-head">
-                <span class={level_class}>{format!("{:?}", event.level)}</span>
-                <span class="mono muted">{event.ts.to_rfc3339()}</span>
-            </div>
-            <p class="log-message mono">{event.message.clone()}</p>
-            <div class="log-tags">
-                <span class="status status-muted">{event.device_id.clone()}</span>
-                <span class="status status-muted">{event.job_id.clone()}</span>
-                <span class="status status-muted">{format_channel(&event.channel)}</span>
-            </div>
-        </div>
-    }
-}
-
-fn format_channel(channel: &LogChannel) -> &'static str {
-    match channel {
-        LogChannel::Stdout => "stdout",
-        LogChannel::Stderr => "stderr",
-        LogChannel::System => "system",
     }
 }
 
