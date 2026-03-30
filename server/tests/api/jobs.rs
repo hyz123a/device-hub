@@ -43,6 +43,7 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
             },
         ],
         ssh_program: Some(ssh_program),
+        artifacts_dir: None,
     }
 }
 
@@ -74,6 +75,7 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
             },
         ],
         ssh_program: Some(ssh_program),
+        artifacts_dir: None,
     }
 }
 
@@ -530,4 +532,69 @@ async fn cancel_job_returns_404_for_unknown_job() {
     assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     let body: serde_json::Value = response.json().await.expect("invalid error body");
     assert_eq!(body["error"], "job not found");
+}
+
+#[tokio::test]
+async fn completed_jobs_persist_job_metadata_and_full_event_history_to_disk() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let artifacts_dir = tempdir.path().join("artifacts");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "i=1
+while [ \"$i\" -le 1105 ]; do
+  printf 'line-%s\\n' \"$i\"
+  i=$((i + 1))
+done
+exit 0",
+    );
+    let mut config = ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    );
+    config.artifacts_dir = Some(artifacts_dir.display().to_string());
+    let app = spawn_app_with_config(config).await;
+
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("generate logs".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+
+    let finished = app
+        .wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+    assert_eq!(finished.status, JobStatus::Succeeded);
+
+    let job_dir = app
+        .artifacts_dir
+        .as_ref()
+        .expect("artifacts dir")
+        .join("jobs")
+        .join(&created.id);
+    assert!(job_dir.join("job.json").exists());
+    assert!(job_dir.join("events.ndjson").exists());
+
+    let persisted_job: Job = serde_json::from_slice(
+        &fs::read(job_dir.join("job.json")).expect("read persisted job metadata"),
+    )
+    .expect("parse persisted job metadata");
+    assert_eq!(persisted_job.status, JobStatus::Succeeded);
+
+    let response = app.get_job_events(&created.id).await;
+    assert!(response.status().is_success());
+    let events: Vec<device_hub_shared::LogEvent> = response
+        .json()
+        .await
+        .expect("invalid persisted job events json");
+
+    assert!(events.len() > 1_000);
+    assert!(events.iter().any(|event| event.message == "line-1"));
+    assert!(events.iter().any(|event| event.message == "line-1105"));
 }

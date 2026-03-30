@@ -11,22 +11,33 @@ use device_hub_shared::{
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::{error::AppError, events::EventBus, storage::job_store::JobStore};
+use crate::{
+    error::AppError,
+    events::EventBus,
+    storage::{artifact_store::ArtifactStore, job_store::JobStore},
+};
 
 #[derive(Clone)]
 pub struct JobManager {
     jobs: JobStore,
     events: EventBus,
+    artifacts: ArtifactStore,
     ssh_adapter: SshAdapter,
     tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     device_locks: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl JobManager {
-    pub fn new(jobs: JobStore, events: EventBus, ssh_adapter: SshAdapter) -> Self {
+    pub fn new(
+        jobs: JobStore,
+        events: EventBus,
+        artifacts: ArtifactStore,
+        ssh_adapter: SshAdapter,
+    ) -> Self {
         Self {
             jobs,
             events,
+            artifacts,
             ssh_adapter,
             tasks: Arc::new(Mutex::new(HashMap::new())),
             device_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -54,17 +65,24 @@ impl JobManager {
             self.try_acquire_device_lock(&device.id, &job.id)?;
         }
 
+        if let Err(error) = self.artifacts.init_job(&job) {
+            if has_exclusive_lock {
+                release_device_lock(&self.device_locks, &device.id, &job.id);
+            }
+            return Err(AppError::Internal(error.to_string()));
+        }
         self.jobs.insert(job.clone());
         self.events.publish(job_event(&job, "job accepted"));
 
         let jobs = self.jobs.clone();
         let events = self.events.clone();
+        let artifacts = self.artifacts.clone();
         let ssh_adapter = self.ssh_adapter.clone();
         let tasks = self.tasks.clone();
         let device_locks = self.device_locks.clone();
         let job_id = job.id.clone();
         let handle = tokio::spawn(async move {
-            jobs.update_status(&job_id, JobStatus::Running);
+            update_job_status(&jobs, &artifacts, &job_id, JobStatus::Running);
             if let Some(running) = jobs.get(&job_id) {
                 events.publish(job_event(&running, "job running"));
             }
@@ -72,6 +90,7 @@ impl JobManager {
             execute_action(
                 &jobs,
                 &events,
+                &artifacts,
                 &ssh_adapter,
                 &job_id,
                 &device,
@@ -127,6 +146,9 @@ impl JobManager {
             .jobs
             .update_status(job_id, JobStatus::Cancelled)
             .ok_or(AppError::JobNotFound)?;
+        self.artifacts
+            .update_job(&job)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
         self.events.publish(job_event(&job, "job cancelled"));
         Ok(job)
     }
@@ -144,6 +166,14 @@ impl JobManager {
 
         locks.insert(device_id.to_owned(), job_id.to_owned());
         Ok(())
+    }
+}
+
+fn update_job_status(jobs: &JobStore, artifacts: &ArtifactStore, job_id: &str, status: JobStatus) {
+    if let Some(job) = jobs.update_status(job_id, status) {
+        if let Err(error) = artifacts.update_job(&job) {
+            eprintln!("failed to persist job {} metadata: {error}", job.id);
+        }
     }
 }
 
@@ -178,6 +208,7 @@ fn job_status_label(status: &JobStatus) -> &'static str {
 async fn execute_action(
     jobs: &JobStore,
     events: &EventBus,
+    artifacts: &ArtifactStore,
     ssh_adapter: &SshAdapter,
     job_id: &str,
     device: &Device,
@@ -189,12 +220,19 @@ async fn execute_action(
     };
 
     match action {
-        "ssh.exec" => execute_ssh_exec(jobs, events, ssh_adapter, &job, device, payload).await,
-        "ssh.reboot" => execute_ssh_reboot(jobs, events, ssh_adapter, &job, device).await,
-        "ssh.tail" => execute_ssh_tail(jobs, events, ssh_adapter, &job, device, payload).await,
+        "ssh.exec" => {
+            execute_ssh_exec(jobs, events, artifacts, ssh_adapter, &job, device, payload).await
+        }
+        "ssh.reboot" => {
+            execute_ssh_reboot(jobs, events, artifacts, ssh_adapter, &job, device).await
+        }
+        "ssh.tail" => {
+            execute_ssh_tail(jobs, events, artifacts, ssh_adapter, &job, device, payload).await
+        }
         _ => fail_job(
             jobs,
             events,
+            artifacts,
             &job,
             format!("unsupported action `{action}` reached executor"),
         ),
@@ -204,13 +242,20 @@ async fn execute_action(
 async fn execute_ssh_exec(
     jobs: &JobStore,
     events: &EventBus,
+    artifacts: &ArtifactStore,
     ssh_adapter: &SshAdapter,
     job: &Job,
     device: &Device,
     payload: Option<&ActionRequest>,
 ) {
     let Some(config) = device.ssh.as_ref() else {
-        fail_job(jobs, events, job, "device is missing ssh configuration");
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing ssh configuration",
+        );
         return;
     };
     let command = payload
@@ -239,29 +284,37 @@ async fn execute_ssh_exec(
             publish_stream(events, job, LogChannel::Stderr, &result.stderr);
 
             if result.exit_code == 0 {
-                succeed_job(jobs, events, job, "ssh.exec completed");
+                succeed_job(jobs, events, artifacts, job, "ssh.exec completed");
             } else {
                 fail_job(
                     jobs,
                     events,
+                    artifacts,
                     job,
                     format!("ssh.exec exited with status {}", result.exit_code),
                 );
             }
         }
-        Err(error) => fail_job(jobs, events, job, error.to_string()),
+        Err(error) => fail_job(jobs, events, artifacts, job, error.to_string()),
     }
 }
 
 async fn execute_ssh_reboot(
     jobs: &JobStore,
     events: &EventBus,
+    artifacts: &ArtifactStore,
     ssh_adapter: &SshAdapter,
     job: &Job,
     device: &Device,
 ) {
     let Some(config) = device.ssh.as_ref() else {
-        fail_job(jobs, events, job, "device is missing ssh configuration");
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing ssh configuration",
+        );
         return;
     };
 
@@ -273,21 +326,28 @@ async fn execute_ssh_reboot(
     ));
 
     match ssh_adapter.reboot(config).await {
-        Ok(()) => succeed_job(jobs, events, job, "ssh.reboot completed"),
-        Err(error) => fail_job(jobs, events, job, error.to_string()),
+        Ok(()) => succeed_job(jobs, events, artifacts, job, "ssh.reboot completed"),
+        Err(error) => fail_job(jobs, events, artifacts, job, error.to_string()),
     }
 }
 
 async fn execute_ssh_tail(
     jobs: &JobStore,
     events: &EventBus,
+    artifacts: &ArtifactStore,
     ssh_adapter: &SshAdapter,
     job: &Job,
     device: &Device,
     payload: Option<&ActionRequest>,
 ) {
     let Some(config) = device.ssh.as_ref() else {
-        fail_job(jobs, events, job, "device is missing ssh configuration");
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing ssh configuration",
+        );
         return;
     };
     let path = payload
@@ -315,16 +375,16 @@ async fn execute_ssh_tail(
                     chunk.line,
                 )),
                 Ok(None) => {
-                    succeed_job(jobs, events, job, "ssh.tail completed");
+                    succeed_job(jobs, events, artifacts, job, "ssh.tail completed");
                     break;
                 }
                 Err(error) => {
-                    fail_job(jobs, events, job, error.to_string());
+                    fail_job(jobs, events, artifacts, job, error.to_string());
                     break;
                 }
             }
         },
-        Err(error) => fail_job(jobs, events, job, error.to_string()),
+        Err(error) => fail_job(jobs, events, artifacts, job, error.to_string()),
     }
 }
 
@@ -334,14 +394,28 @@ fn publish_stream(events: &EventBus, job: &Job, channel: LogChannel, output: &st
     }
 }
 
-fn succeed_job(jobs: &JobStore, events: &EventBus, job: &Job, message: impl Into<String>) {
-    jobs.update_status(&job.id, JobStatus::Succeeded);
-    if let Some(done) = jobs.get(&job.id) {
+fn succeed_job(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    job: &Job,
+    message: impl Into<String>,
+) {
+    if let Some(done) = jobs.update_status(&job.id, JobStatus::Succeeded) {
+        if let Err(error) = artifacts.update_job(&done) {
+            eprintln!("failed to persist job {} metadata: {error}", done.id);
+        }
         events.publish(job_event(&done, message));
     }
 }
 
-fn fail_job(jobs: &JobStore, events: &EventBus, job: &Job, message: impl Into<String>) {
+fn fail_job(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    job: &Job,
+    message: impl Into<String>,
+) {
     let message = message.into();
     events.publish(adapter_event(
         job,
@@ -349,8 +423,10 @@ fn fail_job(jobs: &JobStore, events: &EventBus, job: &Job, message: impl Into<St
         LogLevel::Error,
         &message,
     ));
-    jobs.update_status(&job.id, JobStatus::Failed);
-    if let Some(done) = jobs.get(&job.id) {
+    if let Some(done) = jobs.update_status(&job.id, JobStatus::Failed) {
+        if let Err(error) = artifacts.update_job(&done) {
+            eprintln!("failed to persist job {} metadata: {error}", done.id);
+        }
         events.publish(job_event(&done, format!("job failed: {message}")));
     }
 }
