@@ -8,7 +8,7 @@ async fn list_devices_returns_sorted_devices() {
 
     let response = app
         .api_client
-        .get(app.endpoint("/devices"))
+        .get(app.endpoint("/api/devices"))
         .send()
         .await
         .expect("failed to execute request");
@@ -25,7 +25,7 @@ async fn get_device_returns_detail_for_known_device() {
 
     let response = app
         .api_client
-        .get(app.endpoint("/devices/board-mixed"))
+        .get(app.endpoint("/api/devices/board-mixed"))
         .send()
         .await
         .expect("failed to execute request");
@@ -62,7 +62,7 @@ async fn get_device_returns_404_for_unknown_device() {
 
     let response = app
         .api_client
-        .get(app.endpoint("/devices/unknown-board"))
+        .get(app.endpoint("/api/devices/unknown-board"))
         .send()
         .await
         .expect("failed to execute request");

@@ -42,7 +42,7 @@ pub async fn build_router(config: AppConfig) -> Router {
         job_manager,
     };
 
-    Router::new()
+    let api_router = Router::new()
         .route("/", get(api::root))
         .route("/devices", get(api::list_devices))
         .route("/devices/{device_id}", get(api::get_device))
@@ -52,7 +52,10 @@ pub async fn build_router(config: AppConfig) -> Router {
         )
         .route("/jobs/{job_id}", get(api::get_job).delete(api::cancel_job))
         .route("/jobs/{job_id}/events", get(api::get_job_events))
-        .route("/ws", get(api::ws_events))
+        .route("/ws", get(api::ws_events));
+
+    Router::new()
+        .nest("/api", api_router)
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

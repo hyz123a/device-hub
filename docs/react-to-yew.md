@@ -569,7 +569,7 @@ use_effect_with((), {
     let events = events.clone();
     move |_| {
         wasm_bindgen_futures::spawn_local(async move {
-            let mut ws = WebSocket::open("ws://localhost:3000/ws").unwrap();
+            let mut ws = WebSocket::open("ws://localhost:3000/api/ws").unwrap();
             while let Some(Ok(Message::Text(msg))) = ws.next().await {
                 let event: LogEvent = serde_json::from_str(&msg).unwrap();
                 events.set({

@@ -248,7 +248,7 @@ async fn ssh_tail_streams_live_events_over_websocket() {
         .await
         .expect("invalid job json");
 
-    let mut ws = connect_ws(&app, &format!("/ws?job_id={}", created.id)).await;
+    let mut ws = connect_ws(&app, &format!("/api/ws?job_id={}", created.id)).await;
 
     let mut messages = Vec::new();
     for _ in 0..8 {
@@ -288,7 +288,7 @@ async fn websocket_device_filter_only_streams_matching_device_events() {
     ))
     .await;
 
-    let mut ws = connect_ws(&app, "/ws?device_id=board-alpha").await;
+    let mut ws = connect_ws(&app, "/api/ws?device_id=board-alpha").await;
 
     let alpha_job: Job = app
         .post_action(
@@ -373,7 +373,11 @@ async fn websocket_since_replays_only_newer_job_events() {
         .ts
         .to_rfc3339_opts(SecondsFormat::Millis, true);
 
-    let mut ws = connect_ws(&app, &format!("/ws?job_id={}&since={since}", created.id)).await;
+    let mut ws = connect_ws(
+        &app,
+        &format!("/api/ws?job_id={}&since={since}", created.id),
+    )
+    .await;
 
     let mut messages = Vec::new();
     for _ in 0..4 {

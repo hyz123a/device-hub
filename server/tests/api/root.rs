@@ -8,7 +8,7 @@ async fn root_returns_service_metadata() {
 
     let response = app
         .api_client
-        .get(app.endpoint("/"))
+        .get(app.endpoint("/api"))
         .send()
         .await
         .expect("failed to execute request");

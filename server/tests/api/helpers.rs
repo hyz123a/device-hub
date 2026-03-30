@@ -27,7 +27,7 @@ impl TestApp {
     ) -> reqwest::Response {
         let request = self
             .api_client
-            .post(self.endpoint(&format!("/devices/{device_id}/actions/{action}")));
+            .post(self.endpoint(&format!("/api/devices/{device_id}/actions/{action}")));
 
         let request = match body {
             Some(body) => request.json(body),
@@ -39,7 +39,7 @@ impl TestApp {
 
     pub async fn get_job(&self, job_id: &str) -> reqwest::Response {
         self.api_client
-            .get(self.endpoint(&format!("/jobs/{job_id}")))
+            .get(self.endpoint(&format!("/api/jobs/{job_id}")))
             .send()
             .await
             .expect("failed to execute request")
@@ -47,7 +47,7 @@ impl TestApp {
 
     pub async fn cancel_job(&self, job_id: &str) -> reqwest::Response {
         self.api_client
-            .delete(self.endpoint(&format!("/jobs/{job_id}")))
+            .delete(self.endpoint(&format!("/api/jobs/{job_id}")))
             .send()
             .await
             .expect("failed to execute request")
@@ -55,7 +55,7 @@ impl TestApp {
 
     pub async fn get_job_events(&self, job_id: &str) -> reqwest::Response {
         self.api_client
-            .get(self.endpoint(&format!("/jobs/{job_id}/events")))
+            .get(self.endpoint(&format!("/api/jobs/{job_id}/events")))
             .send()
             .await
             .expect("failed to execute request")

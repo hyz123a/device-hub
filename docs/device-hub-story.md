@@ -25,8 +25,10 @@ For hardware-in-the-loop and device end-to-end testing, the hard part is not onl
 That means AI needs more than shell access. It needs a harness runtime with:
 
 - structured device actions
+- stable machine-callable APIs
 - unified logs and events
 - job lifecycle tracking
+- strict timeouts and safe teardown
 - safe concurrency and locking
 - reproducible execution context
 
@@ -42,7 +44,7 @@ Device Hub is:
 
 - a device test control plane
 - an AI-callable harness execution layer
-- a local service for flashing, reset, command execution, and log collection
+- a local service for flashing, reset, command execution, and log collection through structured APIs
 
 ## Who It Is For
 
@@ -59,7 +61,7 @@ Device Hub is:
 4. AI runs harness steps through SSH or other adapters
 5. Device Hub streams structured logs, status, and artifacts back
 6. AI analyzes failure evidence and revises the harness
-7. the loop repeats until the harness stabilizes
+7. **the loop repeats until the harness stabilizes**
 
 ## MVP Scope
 
@@ -71,6 +73,8 @@ MVP capabilities:
 - SSH adapter
   - exec
   - reboot
+  - log follow
+- Serial adapter
   - log follow
 - generic J-Link adapter
   - probe
@@ -98,9 +102,10 @@ Device Hub directly addresses those gaps.
 ## Design Principles
 
 - local-first: hardware control stays close to the host machine
-- structured over interactive: actions are APIs, not terminal transcripts
+- structured over interactive: actions are stable APIs, not terminal transcripts
 - observable by default: every operation emits logs and status
-- AI-safe: avoid raw unrestricted shell as the primary abstraction
+- AI-safe: **avoid raw unrestricted shell as the primary abstraction**
+- bounded execution: jobs must time out and clean up safely when they fail or are cancelled
 - incrementally extensible: start with SSH and generic J-Link, add more adapters later
 
 ## Future Direction
@@ -109,9 +114,10 @@ Once the MVP works, Device Hub can expand into:
 
 - richer harness asset management
 - reusable test workflows
-- serial and RTT log integration
+- RTT log integration
 - multi-device orchestration
 - CI and remote lab execution
+- power management adapters for hard reset and recovery
 - stronger AI skills for autonomous diagnosis and recovery
 
 ## Success Criteria
