@@ -10,7 +10,7 @@ use crate::{
     api,
     config::AppConfig,
     events::EventBus,
-    services::job_manager::JobManager,
+    services::job_manager::{JobManager, JobPolicyProvider},
     storage::{
         artifact_store::ArtifactStore, device_registry::DeviceRegistry, job_store::JobStore,
     },
@@ -26,6 +26,13 @@ pub struct AppState {
 }
 
 pub async fn build_router(config: AppConfig) -> Router {
+    build_router_with_job_policy(config, JobPolicyProvider::default()).await
+}
+
+pub async fn build_router_with_job_policy(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+) -> Router {
     let AppConfig {
         devices: configured_devices,
         ssh_program,
@@ -40,12 +47,13 @@ pub async fn build_router(config: AppConfig) -> Router {
         None => SshAdapter::new(),
     };
     let serial_adapter = SerialAdapter::new();
-    let job_manager = JobManager::new(
+    let job_manager = JobManager::new_with_policy(
         jobs.clone(),
         events.clone(),
         artifacts.clone(),
         ssh_adapter,
         serial_adapter,
+        policy_provider,
     );
 
     let state = AppState {
@@ -66,7 +74,13 @@ pub async fn build_router(config: AppConfig) -> Router {
             post(api::start_action),
         )
         .route("/jobs/{job_id}", get(api::get_job).delete(api::cancel_job))
+        .route("/jobs/{job_id}/evidence", get(api::get_job_evidence))
         .route("/jobs/{job_id}/events", get(api::get_job_events))
+        .route("/jobs/{job_id}/rerun", post(api::rerun_job))
+        .route(
+            "/jobs/{job_id}/artifacts/{artifact_name}",
+            get(api::download_job_artifact),
+        )
         .route("/ws", get(api::ws_events));
 
     Router::new()

@@ -1,11 +1,11 @@
 use chrono::{DateTime, Utc};
 use device_hub_shared::{LogChannel, LogEvent, LogLevel, LogSource};
-use wasm_bindgen::{closure::Closure, JsCast};
+use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{ErrorEvent, Event, HtmlElement, HtmlInputElement, MessageEvent, WebSocket};
 use yew::prelude::*;
 
 use crate::api;
-use crate::components::log_event::{render_log_message, LogEventCard};
+use crate::components::log_event::{LogEventCard, render_log_message};
 
 #[derive(Properties, PartialEq)]
 pub struct LogViewerProps {
@@ -200,8 +200,12 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
     };
 
     let status_class = match connection.as_str() {
-        "connected" => "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong",
-        "connecting" => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
+        "connected" => {
+            "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong"
+        }
+        "connecting" => {
+            "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
+        }
         _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
     };
     let total_events = events.len();

@@ -1,11 +1,17 @@
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
 use chrono::SecondsFormat;
-use device_hub_server::config::AppConfig;
-use device_hub_shared::{ActionRequest, Device, JlinkConfig, Job, JobStatus, SshConfig};
+use device_hub_server::{
+    config::AppConfig,
+    services::job_manager::{ActionPolicy, JobPolicyProvider},
+};
+use device_hub_shared::{
+    ActionRequest, Device, JlinkConfig, Job, JobEvidence, JobStatus, SshConfig,
+};
 
 use crate::helpers::{
-    connect_ws, recv_ws_event, spawn_app, spawn_app_with_config, wait_for_job_events,
+    connect_ws, recv_ws_event, spawn_app, spawn_app_with_config,
+    spawn_app_with_config_and_job_policy, wait_for_job_events,
 };
 
 fn make_fake_ssh(dir: &Path, body: &str) -> std::path::PathBuf {
@@ -656,4 +662,189 @@ exit 0",
     assert!(events.len() > 1_000);
     assert!(events.iter().any(|event| event.message == "line-1"));
     assert!(events.iter().any(|event| event.message == "line-1105"));
+}
+
+#[tokio::test]
+async fn get_job_evidence_returns_summary_and_downloadable_artifacts() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let artifacts_dir = tempdir.path().join("artifacts");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "printf 'boot ok\\n'\nprintf 'crc mismatch\\n' >&2\nexit 7",
+    );
+    let mut config = ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    );
+    config.artifacts_dir = Some(artifacts_dir.display().to_string());
+    let app = spawn_app_with_config(config).await;
+
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("check-firmware".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+
+    let finished = app
+        .wait_for_job_status(&created.id, JobStatus::Failed)
+        .await;
+    assert_eq!(finished.payload.as_deref(), Some("check-firmware"));
+    assert_eq!(finished.timeout_secs, 30);
+
+    let response = app.get_job_evidence(&created.id).await;
+    assert!(response.status().is_success());
+    let evidence: JobEvidence = response.json().await.expect("invalid evidence json");
+    assert!(evidence.summary.headline.contains("ssh.exec failed"));
+    assert_eq!(
+        evidence.summary.request.as_deref(),
+        Some("command: check-firmware")
+    );
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "job.json")
+    );
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "events.ndjson")
+    );
+
+    let download = app.download_job_artifact(&created.id, "job.json").await;
+    assert!(download.status().is_success());
+    let content_disposition = download
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .expect("content disposition");
+    assert!(
+        content_disposition
+            .to_str()
+            .expect("header string")
+            .contains("job.json")
+    );
+}
+
+#[tokio::test]
+async fn rerun_job_reuses_previous_action_payload_and_device() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(tempdir.path(), "printf 'rerun ready\\n'\nexit 0");
+    let app = spawn_app_with_config(ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("echo rerun".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+    app.wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+
+    let rerun_response = app.rerun_job(&created.id).await;
+    assert!(rerun_response.status().is_success());
+    let rerun: Job = rerun_response.json().await.expect("invalid rerun job json");
+    assert_ne!(rerun.id, created.id);
+    assert_eq!(rerun.device_id, created.device_id);
+    assert_eq!(rerun.action, created.action);
+    assert_eq!(rerun.payload, created.payload);
+
+    let finished = app
+        .wait_for_job_status(&rerun.id, JobStatus::Succeeded)
+        .await;
+    assert_eq!(finished.payload.as_deref(), Some("echo rerun"));
+}
+
+#[tokio::test]
+async fn ssh_exec_times_out_and_records_timeout_policy_events() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(tempdir.path(), "sleep 1");
+    let policy_provider = JobPolicyProvider::new(|action| match action {
+        "ssh.exec" => ActionPolicy::new(
+            std::time::Duration::from_millis(150),
+            "teardown: drop the SSH process, release the device lock, and persist collected evidence",
+        ),
+        "ssh.reboot" => ActionPolicy::new(
+            std::time::Duration::from_secs(20),
+            "teardown: treat the reboot request as fire-and-forget, release the device lock, and rely on reconnect for the next action",
+        ),
+        "ssh.tail" => ActionPolicy::new(
+            std::time::Duration::from_secs(3600),
+            "teardown: stop the SSH tail process, release stream resources, and keep captured logs on disk",
+        ),
+        "serial.tail" => ActionPolicy::new(
+            std::time::Duration::from_secs(3600),
+            "teardown: close the serial stream handle and keep captured logs on disk",
+        ),
+        _ => ActionPolicy::new(
+            std::time::Duration::from_secs(60),
+            "teardown: stop the active adapter task and persist the final job state",
+        ),
+    });
+    let app = spawn_app_with_config_and_job_policy(
+        ssh_test_config(
+            script.display().to_string(),
+            tempdir.path().join("id_rsa").display().to_string(),
+        ),
+        policy_provider,
+    )
+    .await;
+
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("long operation".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+
+    let failed = loop {
+        let response = app.get_job(&created.id).await;
+        let job: Job = response.json().await.expect("invalid job json");
+        if job.status == JobStatus::Failed {
+            break job;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    };
+    assert_eq!(failed.timeout_secs, 0);
+
+    let events = wait_for_job_events(&app, &created.id, 5).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message.contains("timeout policy: 0s"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message.contains("action timed out after 0s"))
+    );
+    assert!(events.iter().any(|event| {
+        event
+            .message
+            .contains("drop the SSH process, release the device lock")
+    }));
 }

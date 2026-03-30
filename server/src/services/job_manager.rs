@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use chrono::Utc;
@@ -25,8 +26,14 @@ pub struct JobManager {
     artifacts: ArtifactStore,
     ssh_adapter: SshAdapter,
     serial_adapter: SerialAdapter,
+    policy_provider: JobPolicyProvider,
     tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     device_locks: Arc<Mutex<HashMap<String, String>>>,
+}
+
+#[derive(Clone)]
+pub struct JobPolicyProvider {
+    resolver: Arc<dyn Fn(&str) -> ActionPolicy + Send + Sync>,
 }
 
 impl JobManager {
@@ -37,12 +44,31 @@ impl JobManager {
         ssh_adapter: SshAdapter,
         serial_adapter: SerialAdapter,
     ) -> Self {
+        Self::new_with_policy(
+            jobs,
+            events,
+            artifacts,
+            ssh_adapter,
+            serial_adapter,
+            JobPolicyProvider::default(),
+        )
+    }
+
+    pub fn new_with_policy(
+        jobs: JobStore,
+        events: EventBus,
+        artifacts: ArtifactStore,
+        ssh_adapter: SshAdapter,
+        serial_adapter: SerialAdapter,
+        policy_provider: JobPolicyProvider,
+    ) -> Self {
         Self {
             jobs,
             events,
             artifacts,
             ssh_adapter,
             serial_adapter,
+            policy_provider,
             tasks: Arc::new(Mutex::new(HashMap::new())),
             device_locks: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -55,10 +81,13 @@ impl JobManager {
         payload: Option<ActionRequest>,
     ) -> Result<Job, AppError> {
         let now = Utc::now();
+        let policy = self.policy_provider.resolve(&action);
         let job = Job {
             id: format!("job_{}", Uuid::new_v4().simple()),
             device_id: device.id.clone(),
             action: action.clone(),
+            payload: payload.as_ref().and_then(|request| request.payload.clone()),
+            timeout_secs: policy.timeout.as_secs(),
             status: JobStatus::Pending,
             created_at: now,
             updated_at: now,
@@ -90,20 +119,61 @@ impl JobManager {
             update_job_status(&jobs, &artifacts, &job_id, JobStatus::Running);
             if let Some(running) = jobs.get(&job_id) {
                 events.publish(job_event(&running, "job running"));
+                events.publish(adapter_event_with_source(
+                    &running,
+                    LogSource::System,
+                    LogChannel::System,
+                    LogLevel::Info,
+                    format!(
+                        "timeout policy: {}s; teardown policy: {}",
+                        policy.timeout.as_secs(),
+                        policy.teardown_note
+                    ),
+                ));
             }
 
-            execute_action(
-                &jobs,
-                &events,
-                &artifacts,
-                &ssh_adapter,
-                &serial_adapter,
-                &job_id,
-                &device,
-                &action,
-                payload.as_ref(),
+            let timed_out = tokio::time::timeout(
+                policy.timeout,
+                execute_action(
+                    &jobs,
+                    &events,
+                    &artifacts,
+                    &ssh_adapter,
+                    &serial_adapter,
+                    &job_id,
+                    &device,
+                    &action,
+                    payload.as_ref(),
+                ),
             )
-            .await;
+            .await
+            .is_err();
+
+            if timed_out {
+                if let Some(running) = jobs.get(&job_id) {
+                    events.publish(adapter_event_with_source(
+                        &running,
+                        LogSource::System,
+                        LogChannel::System,
+                        LogLevel::Warn,
+                        format!("action timed out after {}s", policy.timeout.as_secs()),
+                    ));
+                    events.publish(adapter_event_with_source(
+                        &running,
+                        LogSource::System,
+                        LogChannel::System,
+                        LogLevel::Info,
+                        policy.teardown_note,
+                    ));
+                    fail_job(
+                        &jobs,
+                        &events,
+                        &artifacts,
+                        &running,
+                        format!("action timed out after {}s", policy.timeout.as_secs()),
+                    );
+                }
+            }
 
             if has_exclusive_lock {
                 release_device_lock(&device_locks, &device.id, &job_id);
@@ -134,6 +204,7 @@ impl JobManager {
             ));
         }
 
+        let policy = self.policy_provider.resolve(&job.action);
         let handle = self
             .tasks
             .lock()
@@ -141,6 +212,13 @@ impl JobManager {
             .remove(job_id);
 
         if let Some(handle) = handle {
+            self.events.publish(adapter_event_with_source(
+                &job,
+                LogSource::System,
+                LogChannel::System,
+                LogLevel::Info,
+                format!("cancellation requested; {}", policy.teardown_note),
+            ));
             handle.abort();
         }
 
@@ -172,6 +250,64 @@ impl JobManager {
 
         locks.insert(device_id.to_owned(), job_id.to_owned());
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ActionPolicy {
+    timeout: Duration,
+    teardown_note: &'static str,
+}
+
+impl ActionPolicy {
+    pub fn new(timeout: Duration, teardown_note: &'static str) -> Self {
+        Self {
+            timeout,
+            teardown_note,
+        }
+    }
+}
+
+impl JobPolicyProvider {
+    pub fn new(resolver: impl Fn(&str) -> ActionPolicy + Send + Sync + 'static) -> Self {
+        Self {
+            resolver: Arc::new(resolver),
+        }
+    }
+
+    pub fn resolve(&self, action: &str) -> ActionPolicy {
+        (self.resolver)(action)
+    }
+}
+
+impl Default for JobPolicyProvider {
+    fn default() -> Self {
+        Self::new(default_action_policy)
+    }
+}
+
+fn default_action_policy(action: &str) -> ActionPolicy {
+    match action {
+        "ssh.exec" => ActionPolicy::new(
+            Duration::from_secs(30),
+            "teardown: drop the SSH process, release the device lock, and persist collected evidence",
+        ),
+        "ssh.reboot" => ActionPolicy::new(
+            Duration::from_secs(20),
+            "teardown: treat the reboot request as fire-and-forget, release the device lock, and rely on reconnect for the next action",
+        ),
+        "ssh.tail" => ActionPolicy::new(
+            Duration::from_secs(3600),
+            "teardown: stop the SSH tail process, release stream resources, and keep captured logs on disk",
+        ),
+        "serial.tail" => ActionPolicy::new(
+            Duration::from_secs(3600),
+            "teardown: close the serial stream handle and keep captured logs on disk",
+        ),
+        _ => ActionPolicy::new(
+            Duration::from_secs(60),
+            "teardown: stop the active adapter task and persist the final job state",
+        ),
     }
 }
 
@@ -422,7 +558,10 @@ async fn execute_serial_tail(
         LogSource::Serial,
         LogChannel::System,
         LogLevel::Info,
-        format!("tailing serial logs from {} @ {} baud", config.port, config.baud),
+        format!(
+            "tailing serial logs from {} @ {} baud",
+            config.port, config.baud
+        ),
     ));
 
     match serial_adapter.tail_logs_stream(config).await {

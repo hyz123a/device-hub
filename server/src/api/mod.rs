@@ -1,13 +1,17 @@
 use axum::{
     Json,
     extract::{Path, Query, State, WebSocketUpgrade},
+    http::{HeaderValue, StatusCode, header},
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 
 use crate::{app::AppState, error::AppError};
-use device_hub_shared::{ActionRequest, EventFilter, Job, LogEvent};
+use device_hub_shared::{
+    ActionRequest, EventFilter, Job, JobEvidence, JobStatus, JobSummary, LogChannel, LogEvent,
+    LogLevel,
+};
 
 pub async fn root() -> Json<serde_json::Value> {
     Json(serde_json::json!({
@@ -70,6 +74,34 @@ pub async fn get_job(
     Ok(Json(job))
 }
 
+pub async fn get_job_evidence(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<JobEvidence>, AppError> {
+    let job = state.jobs.get(&job_id).ok_or(AppError::JobNotFound)?;
+    let events = state
+        .artifacts
+        .read_events(&job_id)
+        .map_err(|error| AppError::Internal(error.to_string()))?
+        .unwrap_or_else(|| {
+            state.events.snapshot(&EventFilter {
+                job_id: Some(job_id.clone()),
+                ..EventFilter::default()
+            })
+        });
+    let artifacts = state
+        .artifacts
+        .list_job_artifacts(&job_id)
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let device = state.devices.get(&job.device_id);
+
+    Ok(Json(JobEvidence {
+        summary: build_job_summary(&job, device.as_ref(), &events, &artifacts),
+        job,
+        artifacts,
+    }))
+}
+
 pub async fn get_job_events(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
@@ -99,6 +131,55 @@ pub async fn cancel_job(
 ) -> Result<Json<Job>, AppError> {
     let job = state.job_manager.cancel(&job_id).await?;
     Ok(Json(job))
+}
+
+pub async fn rerun_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Job>, AppError> {
+    let previous = state.jobs.get(&job_id).ok_or(AppError::JobNotFound)?;
+    let device = state
+        .devices
+        .get(&previous.device_id)
+        .ok_or(AppError::DeviceNotFound)?;
+    let payload = previous.payload.clone().map(|payload| ActionRequest {
+        payload: Some(payload),
+    });
+    let job = state
+        .job_manager
+        .start(device, previous.action.clone(), payload)
+        .await?;
+    Ok(Json(job))
+}
+
+pub async fn download_job_artifact(
+    State(state): State<AppState>,
+    Path((job_id, artifact_name)): Path<(String, String)>,
+) -> Result<impl IntoResponse, AppError> {
+    if state.jobs.get(&job_id).is_none() {
+        return Err(AppError::JobNotFound);
+    }
+
+    let path = state
+        .artifacts
+        .artifact_path(&job_id, &artifact_name)
+        .ok_or(AppError::JobNotFound)?;
+    let body = tokio::fs::read(&path)
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, artifact_content_type(&artifact_name)),
+            (
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_str(&format!("attachment; filename=\"{artifact_name}\""))
+                    .map_err(|error| AppError::Internal(error.to_string()))?,
+            ),
+        ],
+        body,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,5 +281,100 @@ fn validate_payload(action: &str, payload: Option<&ActionRequest>) -> Result<(),
             "action `ssh.tail` requires a log path payload".into(),
         )),
         _ => Ok(()),
+    }
+}
+
+fn artifact_content_type(name: &str) -> HeaderValue {
+    match name.rsplit('.').next() {
+        Some("json") => HeaderValue::from_static("application/json"),
+        Some("ndjson") => HeaderValue::from_static("application/x-ndjson"),
+        _ => HeaderValue::from_static("application/octet-stream"),
+    }
+}
+
+fn build_job_summary(
+    job: &Job,
+    device: Option<&device_hub_shared::Device>,
+    events: &[LogEvent],
+    artifacts: &[device_hub_shared::JobArtifact],
+) -> JobSummary {
+    let stdout_lines = events
+        .iter()
+        .filter(|event| matches!(event.channel, LogChannel::Stdout))
+        .count();
+    let stderr_lines = events
+        .iter()
+        .filter(|event| matches!(event.channel, LogChannel::Stderr))
+        .count();
+    let system_events = events
+        .iter()
+        .filter(|event| matches!(event.channel, LogChannel::System))
+        .count();
+    let outcome = events.iter().rev().find_map(|event| {
+        (matches!(event.level, LogLevel::Error)
+            || event.source == device_hub_shared::LogSource::Job)
+            .then(|| event.message.clone())
+    });
+
+    let request = match job.action.as_str() {
+        "ssh.exec" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("command: {payload}")),
+        "ssh.tail" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("path: {payload}")),
+        "serial.tail" => device.and_then(|device| {
+            device
+                .serial
+                .as_ref()
+                .map(|serial| format!("serial: {} @ {} baud", serial.port, serial.baud))
+        }),
+        "ssh.reboot" => device.and_then(|device| {
+            device
+                .ssh
+                .as_ref()
+                .map(|ssh| format!("target: {}@{}", ssh.user, ssh.host))
+        }),
+        _ => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("payload: {payload}")),
+    };
+
+    let mut highlights = vec![format!(
+        "captured {stdout_lines} stdout lines, {stderr_lines} stderr lines, and {system_events} system events"
+    )];
+    highlights.push(format!(
+        "persisted {} artifact files under the server artifact root",
+        artifacts.len()
+    ));
+    if matches!(job.status, JobStatus::Failed | JobStatus::Cancelled) {
+        if let Some(last_error) = events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.level, LogLevel::Error))
+        {
+            highlights.push(format!("last error: {}", last_error.message));
+        }
+    }
+
+    JobSummary {
+        headline: format!(
+            "{} {} on {}",
+            job.action,
+            match job.status {
+                JobStatus::Pending => "is pending",
+                JobStatus::Running => "is running",
+                JobStatus::Succeeded => "succeeded",
+                JobStatus::Failed => "failed",
+                JobStatus::Cancelled => "was cancelled",
+            },
+            job.device_id
+        ),
+        request,
+        outcome,
+        highlights,
     }
 }
