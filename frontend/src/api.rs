@@ -46,12 +46,14 @@ pub async fn start_action(
     action: &str,
     payload: Option<String>,
 ) -> Result<Job, String> {
-    let response = Request::post(&format!("{API_PREFIX}/devices/{device_id}/actions/{action}"))
-        .json(&Some(ActionRequest { payload }))
-        .map_err(|err| err.to_string())?
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
+    let response = Request::post(&format!(
+        "{API_PREFIX}/devices/{device_id}/actions/{action}"
+    ))
+    .json(&Some(ActionRequest { payload }))
+    .map_err(|err| err.to_string())?
+    .send()
+    .await
+    .map_err(|err| err.to_string())?;
     decode_json(response).await
 }
 

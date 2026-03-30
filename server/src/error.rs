@@ -14,22 +14,33 @@ pub enum AppError {
     JobNotFound,
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("device_locked")]
+    DeviceLocked { held_by_job_id: String },
+    #[error("conflict: job is already {0}")]
+    JobNotCancellable(String),
 }
 
 #[derive(Serialize)]
 struct ErrorBody {
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    held_by_job_id: Option<String>,
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let status = match self {
+        let status = match &self {
             Self::DeviceNotFound | Self::JobNotFound => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::DeviceLocked { .. } | Self::JobNotCancellable(_) => StatusCode::CONFLICT,
         };
 
         let body = ErrorBody {
             error: self.to_string(),
+            held_by_job_id: match self {
+                Self::DeviceLocked { held_by_job_id } => Some(held_by_job_id),
+                _ => None,
+            },
         };
 
         (status, Json(body)).into_response()

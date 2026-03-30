@@ -1,9 +1,10 @@
-use device_hub_shared::{LogChannel, LogEvent, LogLevel};
-use wasm_bindgen::{closure::Closure, JsCast};
+use device_hub_shared::LogEvent;
+use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{ErrorEvent, Event, HtmlInputElement, MessageEvent, WebSocket};
 use yew::prelude::*;
 
 use crate::api;
+use crate::components::log_event::LogEventCard;
 
 struct WsBindings {
     socket: WebSocket,
@@ -219,45 +220,18 @@ pub fn log_viewer_page() -> Html {
                         if events.is_empty() {
                             html! { <p class="muted">{"Waiting for live events..."}</p> }
                         } else {
-                            html! { for (*events)[start_index..].iter().rev().map(view_event) }
+                            html! {
+                                for (*events)[start_index..]
+                                    .iter()
+                                    .rev()
+                                    .cloned()
+                                    .map(|event| html! { <LogEventCard event={event} /> })
+                            }
                         }
                     }
                 </div>
             </article>
         </section>
-    }
-}
-
-fn view_event(event: &LogEvent) -> Html {
-    let level_class = match event.level {
-        LogLevel::Error => "status status-error",
-        LogLevel::Warn => "status status-warn",
-        LogLevel::Info => "status status-ok",
-        LogLevel::Debug => "status status-muted",
-    };
-
-    html! {
-        <div class="log-entry">
-            <div class="log-entry-head">
-                <span class={level_class}>{format!("{:?}", event.level)}</span>
-                <span class="mono muted">{event.ts.to_rfc3339()}</span>
-            </div>
-            <p class="log-message mono">{event.message.clone()}</p>
-            <div class="log-tags">
-                <span class="status status-muted">{event.device_id.clone()}</span>
-                <span class="status status-muted">{event.job_id.clone()}</span>
-                <span class="status status-muted">{format_channel(&event.channel)}</span>
-                <span class="status status-muted">{format!("{:?}", event.source)}</span>
-            </div>
-        </div>
-    }
-}
-
-fn format_channel(channel: &LogChannel) -> &'static str {
-    match channel {
-        LogChannel::Stdout => "stdout",
-        LogChannel::Stderr => "stderr",
-        LogChannel::System => "system",
     }
 }
 

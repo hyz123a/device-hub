@@ -244,12 +244,25 @@ a {
 
 .log-entry {
   border-top: 1px solid var(--line);
-  padding-top: 14px;
+  border-left: 4px solid transparent;
+  padding: 14px 0 0 14px;
 }
 
 .log-entry:first-child {
   border-top: 0;
   padding-top: 0;
+}
+
+.log-entry-stdout {
+  border-left-color: #2f855a;
+}
+
+.log-entry-stderr {
+  border-left-color: #c53030;
+}
+
+.log-entry-system {
+  border-left-color: #4a5568;
 }
 
 .log-entry-head {
@@ -260,16 +273,39 @@ a {
   margin-bottom: 10px;
 }
 
+.log-entry-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .log-message {
   margin: 0 0 10px;
   white-space: pre-wrap;
   word-break: break-word;
+  font: inherit;
 }
 
 .log-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.status-stdout {
+  background: rgba(47, 133, 90, 0.16);
+  color: #7ee7a8;
+}
+
+.status-stderr {
+  background: rgba(197, 48, 48, 0.16);
+  color: #feb2b2;
+}
+
+.status-system {
+  background: rgba(160, 174, 192, 0.16);
+  color: #e2e8f0;
 }
 
 @media (max-width: 640px) {

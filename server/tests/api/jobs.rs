@@ -435,6 +435,93 @@ async fn cancel_job_marks_running_job_as_cancelled() {
 }
 
 #[tokio::test]
+async fn start_action_returns_409_when_device_is_locked_by_running_job() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(tempdir.path(), "sleep 5");
+    let app = spawn_app_with_config(ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let holder: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("sleep 5".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid holder job json");
+
+    let _ = app
+        .wait_for_job_status(&holder.id, JobStatus::Running)
+        .await;
+
+    let response = app.post_action("board-alpha", "ssh.reboot", None).await;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(body["error"], "device_locked");
+    assert_eq!(body["held_by_job_id"], holder.id);
+
+    assert!(app.cancel_job(&holder.id).await.status().is_success());
+
+    let restarted = app.post_action("board-alpha", "ssh.reboot", None).await;
+    assert!(restarted.status().is_success());
+    let reopened: Job = restarted.json().await.expect("invalid reopened job json");
+    assert_eq!(reopened.action, "ssh.reboot");
+
+    assert!(app.cancel_job(&reopened.id).await.status().is_success());
+}
+
+#[tokio::test]
+async fn cancel_job_rejects_completed_jobs_without_mutating_status() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(tempdir.path(), "exit 0");
+    let app = spawn_app_with_config(ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("true".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+
+    let finished = app
+        .wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+    assert_eq!(finished.status, JobStatus::Succeeded);
+
+    let response = app.cancel_job(&created.id).await;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(body["error"], "conflict: job is already succeeded");
+
+    let fetched: Job = app
+        .get_job(&created.id)
+        .await
+        .json()
+        .await
+        .expect("invalid fetched job json");
+    assert_eq!(fetched.status, JobStatus::Succeeded);
+}
+
+#[tokio::test]
 async fn cancel_job_returns_404_for_unknown_job() {
     let app = spawn_app().await;
 
