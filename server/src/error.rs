@@ -18,6 +18,8 @@ pub enum AppError {
     DeviceLocked { held_by_job_id: String },
     #[error("conflict: job is already {0}")]
     JobNotCancellable(String),
+    #[error("internal server error: {0}")]
+    Internal(String),
 }
 
 #[derive(Serialize)]
@@ -33,6 +35,7 @@ impl IntoResponse for AppError {
             Self::DeviceNotFound | Self::JobNotFound => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::DeviceLocked { .. } | Self::JobNotCancellable(_) => StatusCode::CONFLICT,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         let body = ErrorBody {

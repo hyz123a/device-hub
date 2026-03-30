@@ -14,4 +14,5 @@
 - [x] Show stdout, stderr, and system events more clearly in the job and live-log views
 - [x] Implement device locking in the server so conflicting actions return `409` with the holding job ID
 - [x] Add API integration tests for device lock conflicts and job cancellation semantics
-- [ ] Persist or export job output artifacts so completed runs remain inspectable outside the live event buffer
+- [ ] Persist job output artifacts as `job.json` + `events.ndjson` so completed runs remain inspectable outside the live event buffer
+- [ ] Add artifact export/download flow for completed jobs

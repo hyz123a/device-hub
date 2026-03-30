@@ -62,6 +62,14 @@ pub async fn get_job_events(
         return Err(AppError::JobNotFound);
     }
 
+    if let Some(events) = state
+        .artifacts
+        .read_events(&job_id)
+        .map_err(|error| AppError::Internal(error.to_string()))?
+    {
+        return Ok(Json(events));
+    }
+
     let filter = EventFilter {
         job_id: Some(job_id),
         ..EventFilter::default()

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use device_hub_server::{app::build_router, config::AppConfig};
 use device_hub_shared::{ActionRequest, Device, JlinkConfig, Job, JobStatus, LogEvent, SshConfig};
@@ -8,6 +8,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungsten
 pub struct TestApp {
     pub address: String,
     pub api_client: reqwest::Client,
+    pub artifacts_dir: Option<PathBuf>,
 }
 
 impl TestApp {
@@ -85,6 +86,7 @@ pub async fn spawn_app() -> TestApp {
 }
 
 pub async fn spawn_app_with_config(config: AppConfig) -> TestApp {
+    let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
     let app = build_router(config).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -103,6 +105,7 @@ pub async fn spawn_app_with_config(config: AppConfig) -> TestApp {
     TestApp {
         address: format!("http://127.0.0.1:{port}"),
         api_client: reqwest::Client::new(),
+        artifacts_dir,
     }
 }
 
@@ -143,6 +146,7 @@ fn test_config() -> AppConfig {
             },
         ],
         ssh_program: None,
+        artifacts_dir: None,
     }
 }
 

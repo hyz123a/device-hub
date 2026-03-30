@@ -10,7 +10,9 @@ use crate::{
     config::AppConfig,
     events::EventBus,
     services::job_manager::JobManager,
-    storage::{device_registry::DeviceRegistry, job_store::JobStore},
+    storage::{
+        artifact_store::ArtifactStore, device_registry::DeviceRegistry, job_store::JobStore,
+    },
 };
 
 #[derive(Clone)]
@@ -18,6 +20,7 @@ pub struct AppState {
     pub devices: DeviceRegistry,
     pub jobs: JobStore,
     pub events: EventBus,
+    pub artifacts: ArtifactStore,
     pub job_manager: JobManager,
 }
 
@@ -25,20 +28,23 @@ pub async fn build_router(config: AppConfig) -> Router {
     let AppConfig {
         devices: configured_devices,
         ssh_program,
+        artifacts_dir,
     } = config;
-    let events = EventBus::new(1_000);
+    let artifacts = ArtifactStore::new(artifacts_dir.unwrap_or_else(|| ".artifacts".into()));
+    let events = EventBus::new(1_000, Some(artifacts.clone()));
     let devices = DeviceRegistry::new(configured_devices);
     let jobs = JobStore::new();
     let ssh_adapter = match ssh_program {
         Some(program) => SshAdapter::with_program(program),
         None => SshAdapter::new(),
     };
-    let job_manager = JobManager::new(jobs.clone(), events.clone(), ssh_adapter);
+    let job_manager = JobManager::new(jobs.clone(), events.clone(), artifacts.clone(), ssh_adapter);
 
     let state = AppState {
         devices,
         jobs,
         events,
+        artifacts,
         job_manager,
     };
 

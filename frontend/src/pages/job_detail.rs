@@ -194,14 +194,38 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                     if let Some(message) = (*error).clone() {
                         html! { <p>{message}</p> }
                     } else if let Some(job) = (*job).clone() {
+                        let job_id = job.id.clone();
                         html! {
                             <>
                                 <h2>{job.action}</h2>
-                                <p class="mono muted">{job.id}</p>
+                                <p class="mono muted">{job_id.clone()}</p>
                                 <div class="log-meta">
                                     <span class={job_status_class(&job.status)}>{format!("{:?}", job.status)}</span>
                                     <span class={status_class}>{(*connection).clone()}</span>
                                 </div>
+                                {
+                                    if is_terminal_status(&job.status) {
+                                        html! {
+                                            <p class="muted">
+                                                {"Artifacts are persisted on the server as "}
+                                                <code>{format!("jobs/{}/job.json", job_id)}</code>
+                                                {" and "}
+                                                <code>{format!("jobs/{}/events.ndjson", job_id)}</code>
+                                                {" under the configured artifact root. Download/export is not available yet."}
+                                            </p>
+                                        }
+                                    } else {
+                                        html! {
+                                            <p class="muted">
+                                                {"Live events stream below. Completed jobs keep "}
+                                                <code>{"job.json"}</code>
+                                                {" and "}
+                                                <code>{"events.ndjson"}</code>
+                                                {" under the server artifact root so history survives the in-memory buffer."}
+                                            </p>
+                                        }
+                                    }
+                                }
                             </>
                         }
                     } else {
@@ -245,6 +269,13 @@ fn job_status_class(status: &JobStatus) -> &'static str {
         JobStatus::Cancelled => "status status-muted",
         JobStatus::Pending | JobStatus::Running => "status status-warn",
     }
+}
+
+fn is_terminal_status(status: &JobStatus) -> bool {
+    matches!(
+        status,
+        JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled
+    )
 }
 
 impl Drop for WsBindings {
