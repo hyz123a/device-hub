@@ -28,7 +28,11 @@ fn switch(route: Route) -> Html {
             html! { <pages::job_detail::JobDetailPage job_id={job_id} /> }
         }
         Route::LogViewer => html! { <pages::log_viewer::LogViewerPage /> },
-        Route::NotFound => html! { <div class="card"><h2>{"Page not found"}</h2></div> },
+        Route::NotFound => html! {
+            <div class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur">
+                <h2 class="m-0 text-2xl font-semibold tracking-tight text-ink">{"Page not found"}</h2>
+            </div>
+        },
     }
 }
 

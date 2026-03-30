@@ -35,31 +35,31 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
     }
 
     html! {
-        <section class="grid">
-            <article class="card" style="grid-column: 1 / -1;">
-                <span class="eyebrow">{"Device detail"}</span>
+        <section class="grid gap-5 xl:grid-cols-2">
+            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Device detail"}</span>
                 {
                     if let Some(message) = (*error).clone() {
-                        html! { <p>{message}</p> }
+                        html! { <p class="mb-0 mt-4 text-sm text-red-700">{message}</p> }
                     } else if let Some(detail) = (*detail).clone() {
                         html! {
                             <>
-                                <h2>{detail.device.label}</h2>
-                                <p class="mono muted">{detail.device.id}</p>
-                                <div class="row">
+                                <h2 class="mb-2 mt-3 text-3xl font-semibold tracking-tight text-ink">{detail.device.label}</h2>
+                                <p class="m-0 font-mono text-sm text-ink-muted">{detail.device.id}</p>
+                                <div class="mt-5 flex flex-col gap-4 border-t border-black/10 pt-4 sm:flex-row sm:items-center sm:justify-between">
                                     <div>
-                                        <h3>{"SSH"}</h3>
-                                        <p>{if detail.capabilities.has_ssh { "Configured" } else { "Unavailable" }}</p>
+                                        <h3 class="mb-1 mt-0 text-lg font-semibold text-ink">{"SSH"}</h3>
+                                        <p class="m-0 text-ink-muted">{if detail.capabilities.has_ssh { "Configured" } else { "Unavailable" }}</p>
                                     </div>
                                     <div>
-                                        <h3>{"J-Link"}</h3>
-                                        <p>{if detail.capabilities.has_jlink { "Configured" } else { "Unavailable" }}</p>
+                                        <h3 class="mb-1 mt-0 text-lg font-semibold text-ink">{"J-Link"}</h3>
+                                        <p class="m-0 text-ink-muted">{if detail.capabilities.has_jlink { "Configured" } else { "Unavailable" }}</p>
                                     </div>
                                 </div>
                             </>
                         }
                     } else {
-                        html! { <p>{"Loading device..."}</p> }
+                        html! { <p class="mb-0 mt-4 text-ink-muted">{"Loading device..."}</p> }
                     }
                 }
             </article>
@@ -179,44 +179,45 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                         };
 
                         html! {
-                            <article class="card" style="grid-column: 1 / -1;">
-                                <span class="eyebrow">{"SSH actions"}</span>
-                                <div class="action-grid">
-                                    <label class="field">
+                            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"SSH actions"}</span>
+                                <div class="mt-4 grid items-end gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+                                    <label class="grid gap-2 text-sm text-ink-muted">
                                         <span>{"Command"}</span>
-                                        <input value={exec_command_value} oninput={on_exec_input} />
+                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={exec_command_value} oninput={on_exec_input} />
                                     </label>
                                     <button
-                                        class="button"
+                                        class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55"
                                         onclick={on_exec}
                                         disabled={pending_action_value.is_some()}
                                     >{"Run ssh.exec"}</button>
-                                    <label class="field">
+                                    <label class="grid gap-2 text-sm text-ink-muted">
                                         <span>{"Log path"}</span>
                                         <input
+                                            class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
                                             value={tail_path_value}
                                             oninput={on_tail_input}
                                             placeholder="/tmp/sdcard/bstationd.log"
                                         />
                                     </label>
                                     <button
-                                        class="button"
+                                        class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55"
                                         onclick={on_tail}
                                         disabled={pending_action_value.is_some()}
                                     >{"Start ssh.tail"}</button>
-                                    <div class="field">
+                                    <div class="grid gap-2 text-sm text-ink-muted">
                                         <span>{"Reboot"}</span>
-                                        <p class="muted">{"Create a reboot job and follow it on the job page."}</p>
+                                        <p class="m-0">{"Create a reboot job and follow it on the job page."}</p>
                                     </div>
                                     <button
-                                        class="button"
+                                        class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55"
                                         onclick={on_reboot}
                                         disabled={pending_action_value.is_some()}
                                     >{"Run ssh.reboot"}</button>
                                 </div>
                                 {
                                     if let Some(action) = pending_action_value {
-                                        html! { <p class="muted">{format!("Starting {action}...")}</p> }
+                                        html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{format!("Starting {action}...")}</p> }
                                     } else {
                                         Html::default()
                                     }

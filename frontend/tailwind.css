@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    @apply m-0 min-h-screen bg-sand-100 font-sans text-ink;
+    background:
+      radial-gradient(circle at top left, rgba(238, 155, 0, 0.18), transparent 28%),
+      radial-gradient(circle at top right, rgba(0, 109, 119, 0.16), transparent 30%),
+      linear-gradient(180deg, #f8f4ec 0%, #efe8dc 100%);
+  }
+
+  a {
+    @apply text-inherit no-underline;
+  }
+}

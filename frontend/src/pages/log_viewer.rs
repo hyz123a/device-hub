@@ -1,5 +1,5 @@
 use device_hub_shared::LogEvent;
-use wasm_bindgen::{JsCast, closure::Closure};
+use wasm_bindgen::{closure::Closure, JsCast};
 use web_sys::{ErrorEvent, Event, HtmlInputElement, MessageEvent, WebSocket};
 use yew::prelude::*;
 
@@ -156,9 +156,9 @@ pub fn log_viewer_page() -> Html {
     };
 
     let status_class = match connection.as_str() {
-        "connected" => "status status-ok",
-        "connecting" => "status status-warn",
-        _ => "status status-muted",
+        "connected" => "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong",
+        "connecting" => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
+        _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
     };
     let total_events = events.len();
     let total_pages = total_events.max(1).div_ceil(EVENT_PAGE_SIZE);
@@ -178,47 +178,47 @@ pub fn log_viewer_page() -> Html {
     };
 
     html! {
-        <section class="grid">
-            <article class="card" style="grid-column: 1 / -1;">
-                <span class="eyebrow">{"Live logs"}</span>
-                <h2>{"WebSocket event stream"}</h2>
-                <p class="muted">{"Subscribe to all events or narrow the stream to one device or one job. Reconnect after changing filters to open a new `/api/ws` subscription."}</p>
-                <p class="muted">{"Filters are combined: when both fields are set, events must match both device and job."}</p>
-                <div class="log-toolbar">
-                    <label class="field">
+        <section class="grid gap-5 xl:grid-cols-2">
+            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Live logs"}</span>
+                <h2 class="mb-3 mt-3 text-3xl font-semibold tracking-tight text-ink">{"WebSocket event stream"}</h2>
+                <p class="m-0 text-ink-muted">{"Subscribe to all events or narrow the stream to one device or one job. Reconnect after changing filters to open a new `/api/ws` subscription."}</p>
+                <p class="mb-0 mt-2 text-ink-muted">{"Filters are combined: when both fields are set, events must match both device and job."}</p>
+                <div class="mt-5 grid items-end gap-4 lg:grid-cols-3">
+                    <label class="grid gap-2 text-sm text-ink-muted">
                         <span>{"Device filter"}</span>
-                        <input value={(*device_filter).clone()} oninput={on_device_input} placeholder="board-alpha" />
+                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={(*device_filter).clone()} oninput={on_device_input} placeholder="board-alpha" />
                     </label>
-                    <label class="field">
+                    <label class="grid gap-2 text-sm text-ink-muted">
                         <span>{"Job filter"}</span>
-                        <input value={(*job_filter).clone()} oninput={on_job_input} placeholder="job_123" />
+                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={(*job_filter).clone()} oninput={on_job_input} placeholder="job_123" />
                     </label>
-                    <button class="button" onclick={on_reconnect}>{"Reconnect stream"}</button>
+                    <button class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95" onclick={on_reconnect}>{"Reconnect stream"}</button>
                 </div>
-                <div class="log-meta">
+                <div class="mt-4 flex flex-wrap items-center gap-3">
                     <span class={status_class}>{(*connection).clone()}</span>
-                    <span class="muted mono">{format!("{} events buffered", events.len())}</span>
+                    <span class="font-mono text-sm text-ink-muted">{format!("{} events buffered", events.len())}</span>
                 </div>
                 {
                     if let Some(message) = (*error).clone() {
-                        html! { <p class="muted">{message}</p> }
+                        html! { <p class="mb-0 mt-4 text-sm text-red-700">{message}</p> }
                     } else {
                         Html::default()
                     }
                 }
             </article>
-            <article class="card" style="grid-column: 1 / -1;">
-                <div class="log-pagination">
-                    <span class="muted mono">{format!("page {} / {} · showing {} of {}", page + 1, total_pages, shown_events, total_events)}</span>
-                    <div class="log-pagination-actions">
-                        <button class="button button-secondary" onclick={on_show_newer} disabled={page == 0}>{"Newer"}</button>
-                        <button class="button button-secondary" onclick={on_show_older} disabled={start_index == 0 || total_events == 0}>{"Older"}</button>
+            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+                    <span class="font-mono text-sm text-ink-muted">{format!("page {} / {} · showing {} of {}", page + 1, total_pages, shown_events, total_events)}</span>
+                    <div class="flex flex-wrap gap-2.5">
+                        <button class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55" onclick={on_show_newer} disabled={page == 0}>{"Newer"}</button>
+                        <button class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55" onclick={on_show_older} disabled={start_index == 0 || total_events == 0}>{"Older"}</button>
                     </div>
                 </div>
-                <div class="timeline">
+                <div class="grid gap-4">
                     {
                         if events.is_empty() {
-                            html! { <p class="muted">{"Waiting for live events..."}</p> }
+                            html! { <p class="m-0 text-ink-muted">{"Waiting for live events..."}</p> }
                         } else {
                             html! {
                                 for (*events)[start_index..]

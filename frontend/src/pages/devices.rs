@@ -25,25 +25,25 @@ pub fn devices_page() -> Html {
     }
 
     html! {
-        <section class="grid">
-            <article class="card">
-                <span class="eyebrow">{"Devices"}</span>
-                <h2>{"Registered targets"}</h2>
-                <p class="muted">{"Startup config is file-backed, so the UI reflects the same typed registry the server exposes to AI callers."}</p>
+        <section class="grid gap-5 xl:grid-cols-2">
+            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur">
+                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Devices"}</span>
+                <h2 class="mb-3 mt-3 text-2xl font-semibold tracking-tight text-ink">{"Registered targets"}</h2>
+                <p class="m-0 text-ink-muted">{"Startup config is file-backed, so the UI reflects the same typed registry the server exposes to AI callers."}</p>
             </article>
-            <article class="card">
-                <span class="eyebrow">{"Status"}</span>
-                <h2>{"Control plane ready"}</h2>
-                <p class="muted">{"Next implementation steps can replace stub jobs with real SSH and J-Link execution paths."}</p>
+            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur">
+                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Status"}</span>
+                <h2 class="mb-3 mt-3 text-2xl font-semibold tracking-tight text-ink">{"Control plane ready"}</h2>
+                <p class="m-0 text-ink-muted">{"SSH actions, live logs, and persisted job artifacts are already wired through the same local control plane the API exposes to AI callers."}</p>
             </article>
-            <article class="card" style="grid-column: 1 / -1;">
-                <div class="list">
+            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                <div class="grid gap-4">
                     {
                         if let Some(message) = (*error).clone() {
-                            html! { <p>{message}</p> }
+                            html! { <p class="m-0 text-sm text-red-700">{message}</p> }
                         } else if let Some(list) = (*devices).clone() {
                             if list.is_empty() {
-                                html! { <p>{"No devices loaded. Create `devices.yaml` from the example file to populate the registry."}</p> }
+                                html! { <p class="m-0 text-ink-muted">{"No devices loaded. Create `devices.yaml` from the example file to populate the registry."}</p> }
                             } else {
                                 html! {
                                     <>
@@ -52,7 +52,7 @@ pub fn devices_page() -> Html {
                                 }
                             }
                         } else {
-                            html! { <p>{"Loading devices..."}</p> }
+                            html! { <p class="m-0 text-ink-muted">{"Loading devices..."}</p> }
                         }
                     }
                 </div>
@@ -67,13 +67,13 @@ fn view_device(device: Device) -> Html {
     };
 
     html! {
-        <div class="row">
+        <div class="flex flex-col gap-3 border-t border-black/10 pt-3 first:border-t-0 first:pt-0 sm:flex-row sm:items-center sm:justify-between">
             <div>
-                <h3>{device.label.clone()}</h3>
-                <p class="mono muted">{device.id.clone()}</p>
+                <h3 class="mb-1 mt-0 text-lg font-semibold text-ink">{device.label.clone()}</h3>
+                <p class="m-0 font-mono text-sm text-ink-muted">{device.id.clone()}</p>
             </div>
-            <div>
-                <span class="status">{
+            <div class="flex flex-wrap items-center gap-3">
+                <span class="inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong">{
                     match (device.ssh.is_some(), device.jlink.is_some()) {
                         (true, true) => "ssh + jlink",
                         (true, false) => "ssh",
@@ -81,8 +81,10 @@ fn view_device(device: Device) -> Html {
                         (false, false) => "unconfigured",
                     }
                 }</span>
-                <span>{" "}</span>
-                <Link<Route> to={route}>{"Open"}</Link<Route>>
+                <Link<Route>
+                    classes="text-sm font-medium text-accent-strong transition hover:text-accent"
+                    to={route}
+                >{"Open"}</Link<Route>>
             </div>
         </div>
     }
