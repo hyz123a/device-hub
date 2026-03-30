@@ -11,15 +11,29 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
     let event = &props.event;
     let message_meta = analyze_message(&event.message);
     let level_class = match event.level {
-        LogLevel::Error => "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700",
-        LogLevel::Warn => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
-        LogLevel::Info => "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong",
-        LogLevel::Debug => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
+        LogLevel::Error => {
+            "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700"
+        }
+        LogLevel::Warn => {
+            "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
+        }
+        LogLevel::Info => {
+            "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong"
+        }
+        LogLevel::Debug => {
+            "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted"
+        }
     };
     let channel_class = match event.channel {
-        LogChannel::Stdout => "inline-flex rounded-full bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-700",
-        LogChannel::Stderr => "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700",
-        LogChannel::System => "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-700",
+        LogChannel::Stdout => {
+            "inline-flex rounded-full bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-700"
+        }
+        LogChannel::Stderr => {
+            "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700"
+        }
+        LogChannel::System => {
+            "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-700"
+        }
     };
     let entry_class = classes!(
         "border-l-4",
@@ -253,11 +267,21 @@ fn ansi_style_class(style: AnsiStyle) -> Classes {
 
 fn detected_level_class(level: DetectedLevel) -> &'static str {
     match level {
-        DetectedLevel::Trace => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-slate-500",
-        DetectedLevel::Debug => "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-700",
-        DetectedLevel::Info => "inline-flex rounded-full bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-700",
-        DetectedLevel::Warn => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
-        DetectedLevel::Error => "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700",
+        DetectedLevel::Trace => {
+            "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-slate-500"
+        }
+        DetectedLevel::Debug => {
+            "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-700"
+        }
+        DetectedLevel::Info => {
+            "inline-flex rounded-full bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-700"
+        }
+        DetectedLevel::Warn => {
+            "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
+        }
+        DetectedLevel::Error => {
+            "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700"
+        }
     }
 }
 

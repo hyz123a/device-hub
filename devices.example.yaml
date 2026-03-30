@@ -2,9 +2,12 @@ devices:
   - id: board-01
     label: Linux Board
     ssh:
-      host: 192.168.1.100
+      host: 192.168.110.151
       user: root
-      key: $SSH_KEY_PATH
+      key: /home/hyz/.ssh/id_rsa
+    serial:
+      port: /dev/ttyUSB0
+      baud: 115200
 
   - id: board-02
     label: Bare Metal Target

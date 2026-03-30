@@ -37,8 +37,11 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                 match api::list_jobs(Some(&device_id)).await {
                     Ok(jobs) => {
                         running_ssh_tail.set(find_running_tail_job(&jobs, &device_id, "ssh.tail"));
-                        running_serial_tail
-                            .set(find_running_tail_job(&jobs, &device_id, "serial.tail"));
+                        running_serial_tail.set(find_running_tail_job(
+                            &jobs,
+                            &device_id,
+                            "serial.tail",
+                        ));
                     }
                     Err(err) => error.set(Some(err)),
                 }

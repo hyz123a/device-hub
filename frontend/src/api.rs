@@ -1,4 +1,4 @@
-use device_hub_shared::{ActionRequest, Device, DeviceDetail, Job, LogEvent};
+use device_hub_shared::{ActionRequest, Device, DeviceDetail, Job, JobEvidence, LogEvent};
 use gloo_net::http::{Request, Response};
 use serde::Deserialize;
 
@@ -25,8 +25,8 @@ pub async fn get_device(device_id: &str) -> Result<DeviceDetail, String> {
     decode_json(response).await
 }
 
-pub async fn get_job(job_id: &str) -> Result<Job, String> {
-    let response = Request::get(&format!("{API_PREFIX}/jobs/{job_id}"))
+pub async fn get_job_evidence(job_id: &str) -> Result<JobEvidence, String> {
+    let response = Request::get(&format!("{API_PREFIX}/jobs/{job_id}/evidence"))
         .send()
         .await
         .map_err(|err| err.to_string())?;
@@ -75,6 +75,18 @@ pub async fn cancel_job(job_id: &str) -> Result<Job, String> {
         .await
         .map_err(|err| err.to_string())?;
     decode_json(response).await
+}
+
+pub async fn rerun_job(job_id: &str) -> Result<Job, String> {
+    let response = Request::post(&format!("{API_PREFIX}/jobs/{job_id}/rerun"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub fn artifact_url(download_url: &str) -> String {
+    download_url.to_owned()
 }
 
 async fn decode_json<T>(response: Response) -> Result<T, String>

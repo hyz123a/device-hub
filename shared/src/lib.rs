@@ -8,4 +8,4 @@ pub use device::{
     Device, DeviceConnectionSummary, DeviceDetail, JlinkConfig, SerialConfig, SshConfig,
 };
 pub use event::{EventFilter, LogChannel, LogEvent, LogLevel, LogSource};
-pub use job::{Job, JobStatus};
+pub use job::{Job, JobArtifact, JobEvidence, JobStatus, JobSummary};

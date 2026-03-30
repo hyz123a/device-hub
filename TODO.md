@@ -20,8 +20,8 @@
 - [x] Implement a `device-hub-adapter-serial` crate with bounded log streaming, cancellation support, and unified `LogEvent` emission
 - [ ] Add J-Link action endpoints and UI controls for `jlink.probe`, `jlink.flash`, `jlink.verify`, and `jlink.reset`
 - [ ] Extend the J-Link adapter to return structured result payloads and artifact files instead of relying only on raw tool text
-- [ ] Add per-action timeout and safe teardown policies in the job runner so failed or cancelled jobs leave devices in a known state
-- [ ] Surface richer job evidence in the Web UI, including artifact lists, download links, and action-specific summaries for AI/human diagnosis
-- [ ] Add an API/UI flow to rerun a previous job with the same device, action, and arguments to tighten the harness-debug loop
+- [x] Add per-action timeout and safe teardown policies in the job runner so failed or cancelled jobs leave devices in a known state
+- [x] Surface richer job evidence in the Web UI, including artifact lists, download links, and action-specific summaries for AI/human diagnosis
+- [x] Add an API/UI flow to rerun a previous job with the same device, action, and arguments to tighten the harness-debug loop
 - [ ] Add server and integration tests covering serial streaming, J-Link job lifecycle, timeout handling, and artifact persistence
 - [ ] Embed `frontend/dist` into `server` for single-binary local distribution

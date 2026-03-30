@@ -1,6 +1,8 @@
 use std::{path::PathBuf, time::Duration};
 
-use device_hub_server::{app::build_router, config::AppConfig};
+use device_hub_server::{
+    app::build_router_with_job_policy, config::AppConfig, services::job_manager::JobPolicyProvider,
+};
 use device_hub_shared::{
     ActionRequest, Device, JlinkConfig, Job, JobStatus, LogEvent, SerialConfig, SshConfig,
 };
@@ -48,9 +50,37 @@ impl TestApp {
             .expect("failed to execute request")
     }
 
+    pub async fn get_job_evidence(&self, job_id: &str) -> reqwest::Response {
+        self.api_client
+            .get(self.endpoint(&format!("/api/jobs/{job_id}/evidence")))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
     pub async fn cancel_job(&self, job_id: &str) -> reqwest::Response {
         self.api_client
             .delete(self.endpoint(&format!("/api/jobs/{job_id}")))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
+    pub async fn rerun_job(&self, job_id: &str) -> reqwest::Response {
+        self.api_client
+            .post(self.endpoint(&format!("/api/jobs/{job_id}/rerun")))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
+    pub async fn download_job_artifact(
+        &self,
+        job_id: &str,
+        artifact_name: &str,
+    ) -> reqwest::Response {
+        self.api_client
+            .get(self.endpoint(&format!("/api/jobs/{job_id}/artifacts/{artifact_name}")))
             .send()
             .await
             .expect("failed to execute request")
@@ -88,8 +118,15 @@ pub async fn spawn_app() -> TestApp {
 }
 
 pub async fn spawn_app_with_config(config: AppConfig) -> TestApp {
+    spawn_app_with_config_and_job_policy(config, JobPolicyProvider::default()).await
+}
+
+pub async fn spawn_app_with_config_and_job_policy(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+) -> TestApp {
     let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
-    let app = build_router(config).await;
+    let app = build_router_with_job_policy(config, policy_provider).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("failed to bind random port");
