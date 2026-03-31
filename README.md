@@ -13,7 +13,7 @@ Local-first device control plane scaffold for AI-assisted hardware workflows.
 ## Quick Start
 
 1. Copy `devices.example.yaml` to `devices.yaml` and fill in real values.
-2. Run the server:
+2. Run the server API:
 
 ```bash
 cargo run -p device-hub-server
@@ -25,3 +25,17 @@ cargo run -p device-hub-server
 cd frontend
 trunk serve --config Trunk.toml
 ```
+
+## Single-Binary Build
+
+Build the frontend bundle and embed it into the server binary:
+
+```bash
+bash tools/build-server-with-frontend.sh
+```
+
+That script installs frontend npm dependencies on first run, builds `frontend/dist`, packs it as a single tar bundle, and passes the bundle path into the server build through `DEVICE_HUB_FRONTEND_BUNDLE`.
+
+The first release frontend build may take longer because `trunk` can download `wasm-opt`.
+
+After that bundle exists at `target/frontend-bundle/frontend.bundle.tar`, ordinary `cargo build -p device-hub-server` will reuse it automatically. The server only falls back to the placeholder frontend when no bundle has been built yet.

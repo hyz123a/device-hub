@@ -24,4 +24,4 @@
 - [x] Surface richer job evidence in the Web UI, including artifact lists, download links, and action-specific summaries for AI/human diagnosis
 - [x] Add an API/UI flow to rerun a previous job with the same device, action, and arguments to tighten the harness-debug loop
 - [ ] Add server and integration tests covering serial streaming, J-Link job lifecycle, timeout handling, and artifact persistence
-- [ ] Embed `frontend/dist` into `server` for single-binary local distribution
+- [x] Embed `frontend/dist` into `server` for single-binary local distribution

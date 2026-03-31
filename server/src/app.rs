@@ -11,6 +11,7 @@ use crate::{
     api,
     config::AppConfig,
     events::EventBus,
+    frontend::{self, FrontendAssets},
     services::job_manager::{JobManager, JobPolicyProvider},
     storage::{
         artifact_store::ArtifactStore, device_registry::DeviceRegistry, job_store::JobStore,
@@ -24,6 +25,7 @@ pub struct AppState {
     pub events: EventBus,
     pub artifacts: ArtifactStore,
     pub job_manager: JobManager,
+    pub frontend: FrontendAssets,
 }
 
 pub async fn build_router(config: AppConfig) -> Router {
@@ -53,6 +55,8 @@ pub async fn build_router_with_job_policy(
         None => JlinkAdapter::new(),
     };
     let serial_adapter = SerialAdapter::new();
+    let frontend = FrontendAssets::load_from_embedded_bundle()
+        .expect("failed to load embedded frontend assets");
     let job_manager = JobManager::new_with_policy(
         jobs.clone(),
         events.clone(),
@@ -69,6 +73,7 @@ pub async fn build_router_with_job_policy(
         events,
         artifacts,
         job_manager,
+        frontend,
     };
 
     let api_router = Router::new()
@@ -88,10 +93,12 @@ pub async fn build_router_with_job_policy(
             "/jobs/{job_id}/artifacts/{artifact_name}",
             get(api::download_job_artifact),
         )
-        .route("/ws", get(api::ws_events));
+        .route("/ws", get(api::ws_events))
+        .fallback(frontend::api_not_found);
 
     Router::new()
         .nest("/api", api_router)
+        .fallback(frontend::serve_embedded_asset)
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
