@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::{app::AppState, error::AppError};
 use device_hub_shared::{
     ActionRequest, EventFilter, Job, JobEvidence, JobStatus, JobSummary, LogChannel, LogEvent,
-    LogLevel,
+    LogLevel, LogSource,
 };
 
 pub async fn root() -> Json<serde_json::Value> {
@@ -105,6 +105,7 @@ pub async fn get_job_evidence(
 pub async fn get_job_events(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
+    Query(query): Query<JobEventsQuery>,
 ) -> Result<Json<Vec<LogEvent>>, AppError> {
     if state.jobs.get(&job_id).is_none() {
         return Err(AppError::JobNotFound);
@@ -115,14 +116,24 @@ pub async fn get_job_events(
         .read_events(&job_id)
         .map_err(|error| AppError::Internal(error.to_string()))?
     {
-        return Ok(Json(events));
+        return Ok(Json(filter_job_events(events, &query)));
     }
 
     let filter = EventFilter {
         job_id: Some(job_id),
         ..EventFilter::default()
     };
-    Ok(Json(state.events.snapshot(&filter)))
+    Ok(Json(filter_job_events(
+        state.events.snapshot(&filter),
+        &query,
+    )))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct JobEventsQuery {
+    pub source: Option<LogSource>,
+    pub level: Option<LogLevel>,
+    pub search: Option<String>,
 }
 
 pub async fn cancel_job(
@@ -295,6 +306,76 @@ fn artifact_content_type(name: &str) -> HeaderValue {
         Some("json") => HeaderValue::from_static("application/json"),
         Some("ndjson") => HeaderValue::from_static("application/x-ndjson"),
         _ => HeaderValue::from_static("application/octet-stream"),
+    }
+}
+
+fn filter_job_events(events: Vec<LogEvent>, query: &JobEventsQuery) -> Vec<LogEvent> {
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+
+    events
+        .into_iter()
+        .filter(|event| {
+            query
+                .source
+                .as_ref()
+                .is_none_or(|source| &event.source == source)
+        })
+        .filter(|event| {
+            query
+                .level
+                .as_ref()
+                .is_none_or(|level| &event.level == level)
+        })
+        .filter(|event| {
+            search
+                .as_deref()
+                .is_none_or(|value| event_matches_search_query(event, value))
+        })
+        .collect()
+}
+
+fn event_matches_search_query(event: &LogEvent, query: &str) -> bool {
+    [
+        event.message.as_str(),
+        event.device_id.as_str(),
+        event.job_id.as_str(),
+        log_source_label(&event.source),
+        log_channel_label(&event.channel),
+        log_level_label(&event.level),
+    ]
+    .into_iter()
+    .any(|value| value.to_ascii_lowercase().contains(query))
+}
+
+fn log_source_label(source: &LogSource) -> &'static str {
+    match source {
+        LogSource::Ssh => "ssh",
+        LogSource::Serial => "serial",
+        LogSource::Jlink => "jlink",
+        LogSource::System => "system",
+        LogSource::Job => "job",
+    }
+}
+
+fn log_channel_label(channel: &LogChannel) -> &'static str {
+    match channel {
+        LogChannel::Stdout => "stdout",
+        LogChannel::Stderr => "stderr",
+        LogChannel::System => "system",
+    }
+}
+
+fn log_level_label(level: &LogLevel) -> &'static str {
+    match level {
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
     }
 }
 
