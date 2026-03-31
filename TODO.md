@@ -18,6 +18,7 @@
 - [ ] Add artifact export/download flow for completed jobs
 - [x] Add `serial` support to the shared schema, device detail page, and server action routing so `serial.tail` becomes a first-class job like `ssh.tail`
 - [x] Implement a `device-hub-adapter-serial` crate with bounded log streaming, cancellation support, and unified `LogEvent` emission
+- [x] Add `serial.write` job support and a basic UI flow so operators can send serial input, control characters, and newline-terminated commands through Device Hub
 - [x] Add J-Link action endpoints and UI controls for `jlink.probe`, `jlink.flash`, `jlink.verify`, and `jlink.reset`
 - [x] Extend the J-Link adapter to return structured result payloads and artifact files instead of relying only on raw tool text
 - [x] Add per-action timeout and safe teardown policies in the job runner so failed or cancelled jobs leave devices in a known state

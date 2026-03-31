@@ -315,6 +315,10 @@ fn default_action_policy(action: &str) -> ActionPolicy {
             Duration::from_secs(3600),
             "teardown: close the serial stream handle and keep captured logs on disk",
         ),
+        "serial.write" => ActionPolicy::new(
+            Duration::from_secs(10),
+            "teardown: close the serial write handle, release the device lock, and persist the final job state",
+        ),
         _ => ActionPolicy::new(
             Duration::from_secs(60),
             "teardown: stop the active adapter task and persist the final job state",
@@ -410,6 +414,18 @@ async fn execute_action(
         }
         "serial.tail" => {
             execute_serial_tail(jobs, events, artifacts, serial_adapter, &job, device).await
+        }
+        "serial.write" => {
+            execute_serial_write(
+                jobs,
+                events,
+                artifacts,
+                serial_adapter,
+                &job,
+                device,
+                payload,
+            )
+            .await
         }
         _ => fail_job(
             jobs,
@@ -617,12 +633,83 @@ async fn execute_serial_tail(
                     break;
                 }
                 Err(error) => {
-                    fail_job(jobs, events, artifacts, job, error.to_string());
+                    fail_job_with_source(
+                        jobs,
+                        events,
+                        artifacts,
+                        job,
+                        LogSource::Serial,
+                        error.to_string(),
+                    );
                     break;
                 }
             }
         },
-        Err(error) => fail_job(jobs, events, artifacts, job, error.to_string()),
+        Err(error) => fail_job_with_source(
+            jobs,
+            events,
+            artifacts,
+            job,
+            LogSource::Serial,
+            error.to_string(),
+        ),
+    }
+}
+
+async fn execute_serial_write(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    serial_adapter: &SerialAdapter,
+    job: &Job,
+    device: &Device,
+    payload: Option<&ActionRequest>,
+) {
+    let Some(config) = device.serial.as_ref() else {
+        fail_job_with_source(
+            jobs,
+            events,
+            artifacts,
+            job,
+            LogSource::Serial,
+            "device is missing serial configuration",
+        );
+        return;
+    };
+    let input = payload
+        .and_then(|request| request.payload.as_deref())
+        .unwrap_or_default();
+
+    events.publish(adapter_event_with_source(
+        job,
+        LogSource::Serial,
+        LogChannel::System,
+        LogLevel::Info,
+        format!("writing serial input {}", input.escape_debug()),
+    ));
+
+    match serial_adapter.write(config, input.as_bytes()).await {
+        Ok(bytes_written) => {
+            events.publish(adapter_event_with_source(
+                job,
+                LogSource::Serial,
+                LogChannel::System,
+                LogLevel::Info,
+                format!(
+                    "wrote {bytes_written} bytes to {} @ {} baud",
+                    config.port, config.baud
+                ),
+            ));
+            succeed_job(jobs, events, artifacts, job, "serial.write completed");
+        }
+        Err(error) => fail_job_with_source(
+            jobs,
+            events,
+            artifacts,
+            job,
+            LogSource::Serial,
+            error.to_string(),
+        ),
     }
 }
 
