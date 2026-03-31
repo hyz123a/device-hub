@@ -16,7 +16,6 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
     let error = use_state(|| Option::<String>::None);
     let exec_command = use_state(|| "uname -a".to_owned());
     let tail_path = use_state(String::new);
-    let serial_write_input = use_state(String::new);
     let jlink_firmware_path = use_state(String::new);
     let pending_action = use_state(|| Option::<String>::None);
     let running_ssh_tail = use_state(|| Option::<Job>::None);
@@ -323,17 +322,8 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                         let device_id = detail.device.id.clone();
                         let pending_action_value = (*pending_action).clone();
                         let running_serial_tail_value = (*running_serial_tail).clone();
-                        let serial_write_input_value = (*serial_write_input).clone();
                         let device_logs_route = Route::DeviceLogs {
                             device_id: device_id.clone(),
-                        };
-
-                        let on_serial_write_input = {
-                            let serial_write_input = serial_write_input.clone();
-                            Callback::from(move |event: InputEvent| {
-                                let input: web_sys::HtmlTextAreaElement = event.target_unchecked_into();
-                                serial_write_input.set(input.value());
-                            })
                         };
 
                         let on_serial_tail = {
@@ -383,90 +373,6 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                 });
                             })
                         };
-
-                        let on_serial_write = {
-                            let device_id = device_id.clone();
-                            let error = error.clone();
-                            let pending_action = pending_action.clone();
-                            let navigator = navigator.clone();
-                            let serial_write_input = serial_write_input.clone();
-                            Callback::from(move |_| {
-                                let device_id = device_id.clone();
-                                let payload = (*serial_write_input).clone();
-                                let error = error.clone();
-                                let pending_action = pending_action.clone();
-                                let navigator = navigator.clone();
-                                pending_action.set(Some("serial.write".to_owned()));
-                                spawn_local(async move {
-                                    match api::start_action(&device_id, "serial.write", Some(payload)).await {
-                                        Ok(job) => {
-                                            pending_action.set(None);
-                                            error.set(None);
-                                            if let Some(navigator) = navigator {
-                                                navigator.push(&Route::JobDetail { job_id: job.id });
-                                            }
-                                        }
-                                        Err(message) => {
-                                            pending_action.set(None);
-                                            error.set(Some(message));
-                                        }
-                                    }
-                                });
-                            })
-                        };
-
-                        let on_serial_write_line = {
-                            let device_id = device_id.clone();
-                            let error = error.clone();
-                            let pending_action = pending_action.clone();
-                            let navigator = navigator.clone();
-                            let serial_write_input = serial_write_input.clone();
-                            Callback::from(move |_| {
-                                let device_id = device_id.clone();
-                                let payload = format!("{}\n", *serial_write_input);
-                                let error = error.clone();
-                                let pending_action = pending_action.clone();
-                                let navigator = navigator.clone();
-                                pending_action.set(Some("serial.write".to_owned()));
-                                spawn_local(async move {
-                                    match api::start_action(&device_id, "serial.write", Some(payload)).await {
-                                        Ok(job) => {
-                                            pending_action.set(None);
-                                            error.set(None);
-                                            if let Some(navigator) = navigator {
-                                                navigator.push(&Route::JobDetail { job_id: job.id });
-                                            }
-                                        }
-                                        Err(message) => {
-                                            pending_action.set(None);
-                                            error.set(Some(message));
-                                        }
-                                    }
-                                });
-                            })
-                        };
-
-                        let on_serial_ctrl_c = make_serial_control_action(
-                            device_id.clone(),
-                            error.clone(),
-                            pending_action.clone(),
-                            navigator.clone(),
-                            '\u{3}',
-                        );
-                        let on_serial_ctrl_d = make_serial_control_action(
-                            device_id.clone(),
-                            error.clone(),
-                            pending_action.clone(),
-                            navigator.clone(),
-                            '\u{4}',
-                        );
-                        let on_serial_escape = make_serial_control_action(
-                            device_id.clone(),
-                            error.clone(),
-                            pending_action.clone(),
-                            navigator.clone(),
-                            '\u{1b}',
-                        );
 
                         html! {
                             <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
@@ -524,46 +430,6 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                             }
                                         }</button>
                                     </div>
-                                    <label class="grid gap-2 text-sm text-ink-muted md:col-span-2">
-                                        <span>{"Send serial input"}</span>
-                                        <textarea
-                                            class="min-h-28 w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
-                                            value={serial_write_input_value}
-                                            oninput={on_serial_write_input}
-                                            placeholder="help"
-                                        />
-                                    </label>
-                                    <div class="grid gap-2 text-sm text-ink-muted">
-                                        <span>{"Write actions"}</span>
-                                        <p class="m-0">{"Send raw text, append a newline for shell-style commands, or inject common control characters."}</p>
-                                    </div>
-                                    <div class="flex flex-wrap justify-end gap-3">
-                                        <button
-                                            class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
-                                            onclick={on_serial_ctrl_c}
-                                            disabled={pending_action_value.is_some()}
-                                        >{"Send Ctrl-C"}</button>
-                                        <button
-                                            class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
-                                            onclick={on_serial_ctrl_d}
-                                            disabled={pending_action_value.is_some()}
-                                        >{"Send Ctrl-D"}</button>
-                                        <button
-                                            class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
-                                            onclick={on_serial_escape}
-                                            disabled={pending_action_value.is_some()}
-                                        >{"Send Esc"}</button>
-                                        <button
-                                            class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
-                                            onclick={on_serial_write}
-                                            disabled={pending_action_value.is_some()}
-                                        >{"Send raw"}</button>
-                                        <button
-                                            class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55"
-                                            onclick={on_serial_write_line}
-                                            disabled={pending_action_value.is_some()}
-                                        >{"Send line"}</button>
-                                    </div>
                                 </div>
                                 {
                                     if let Some(action) = pending_action_value {
@@ -571,8 +437,6 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                             html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Starting serial.tail..."}</p> }
                                         } else if action == "serial.tail.stop" {
                                             html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Stopping serial.tail..."}</p> }
-                                        } else if action == "serial.write" {
-                                            html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Starting serial.write..."}</p> }
                                         } else {
                                             Html::default()
                                         }
@@ -790,37 +654,6 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
             }
         </section>
     }
-}
-
-fn make_serial_control_action(
-    device_id: String,
-    error: UseStateHandle<Option<String>>,
-    pending_action: UseStateHandle<Option<String>>,
-    navigator: Option<Navigator>,
-    control: char,
-) -> Callback<MouseEvent> {
-    Callback::from(move |_| {
-        let device_id = device_id.clone();
-        let error = error.clone();
-        let pending_action = pending_action.clone();
-        let navigator = navigator.clone();
-        pending_action.set(Some("serial.write".to_owned()));
-        spawn_local(async move {
-            match api::start_action(&device_id, "serial.write", Some(control.to_string())).await {
-                Ok(job) => {
-                    pending_action.set(None);
-                    error.set(None);
-                    if let Some(navigator) = navigator {
-                        navigator.push(&Route::JobDetail { job_id: job.id });
-                    }
-                }
-                Err(message) => {
-                    pending_action.set(None);
-                    error.set(Some(message));
-                }
-            }
-        });
-    })
 }
 
 fn find_running_tail_job(jobs: &[Job], device_id: &str, action: &str) -> Option<Job> {
