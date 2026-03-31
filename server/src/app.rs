@@ -36,6 +36,15 @@ pub async fn build_router_with_job_policy(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
 ) -> Router {
+    build_router_with_job_policy_and_serial_adapter(config, policy_provider, SerialAdapter::new())
+        .await
+}
+
+pub async fn build_router_with_job_policy_and_serial_adapter(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+    serial_adapter: SerialAdapter,
+) -> Router {
     let AppConfig {
         devices: configured_devices,
         ssh_program,
@@ -54,7 +63,6 @@ pub async fn build_router_with_job_policy(
         Some(program) => JlinkAdapter::with_program(program),
         None => JlinkAdapter::new(),
     };
-    let serial_adapter = SerialAdapter::new();
     let frontend = FrontendAssets::load_from_embedded_bundle()
         .expect("failed to load embedded frontend assets");
     let job_manager = JobManager::new_with_policy(

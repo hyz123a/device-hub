@@ -105,6 +105,42 @@ async fn start_action_creates_a_job_for_serial_tail() {
 }
 
 #[tokio::test]
+async fn start_action_creates_a_job_for_serial_write() {
+    let app = spawn_app().await;
+
+    let response = app
+        .post_action(
+            "board-alpha",
+            "serial.write",
+            Some(&ActionRequest {
+                payload: Some("help\n".into()),
+            }),
+        )
+        .await;
+
+    assert!(response.status().is_success());
+    let job: Job = response.json().await.expect("invalid job json");
+    assert_eq!(job.device_id, "board-alpha");
+    assert_eq!(job.action, "serial.write");
+    assert_eq!(job.payload.as_deref(), Some("help\n"));
+    assert_eq!(job.status, JobStatus::Pending);
+}
+
+#[tokio::test]
+async fn start_action_rejects_missing_payload_for_serial_write() {
+    let app = spawn_app().await;
+
+    let response = app.post_action("board-alpha", "serial.write", None).await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(
+        body["error"],
+        "bad request: action `serial.write` requires a payload"
+    );
+}
+
+#[tokio::test]
 async fn start_action_rejects_serial_tail_for_device_without_serial() {
     let app = spawn_app().await;
 
@@ -115,5 +151,27 @@ async fn start_action_rejects_serial_tail_for_device_without_serial() {
     assert_eq!(
         body["error"],
         "bad request: device `board-zeta` does not support action `serial.tail`"
+    );
+}
+
+#[tokio::test]
+async fn start_action_rejects_serial_write_for_device_without_serial() {
+    let app = spawn_app().await;
+
+    let response = app
+        .post_action(
+            "board-zeta",
+            "serial.write",
+            Some(&ActionRequest {
+                payload: Some("help".into()),
+            }),
+        )
+        .await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(
+        body["error"],
+        "bad request: device `board-zeta` does not support action `serial.write`"
     );
 }

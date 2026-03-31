@@ -1,7 +1,9 @@
 use std::{path::PathBuf, time::Duration};
 
+use device_hub_adapter_serial::SerialAdapter;
 use device_hub_server::{
-    app::build_router_with_job_policy, config::AppConfig, services::job_manager::JobPolicyProvider,
+    app::build_router_with_job_policy_and_serial_adapter, config::AppConfig,
+    services::job_manager::JobPolicyProvider,
 };
 use device_hub_shared::{
     ActionRequest, Device, JlinkConfig, Job, JobStatus, LogEvent, SerialConfig, SshConfig,
@@ -125,8 +127,23 @@ pub async fn spawn_app_with_config_and_job_policy(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
 ) -> TestApp {
+    spawn_app_with_config_job_policy_and_serial_adapter(
+        config,
+        policy_provider,
+        SerialAdapter::new(),
+    )
+    .await
+}
+
+pub async fn spawn_app_with_config_job_policy_and_serial_adapter(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+    serial_adapter: SerialAdapter,
+) -> TestApp {
     let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
-    let app = build_router_with_job_policy(config, policy_provider).await;
+    let app =
+        build_router_with_job_policy_and_serial_adapter(config, policy_provider, serial_adapter)
+            .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("failed to bind random port");

@@ -249,7 +249,7 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, state: AppState, fi
 fn validate_action(action: &str, device: &device_hub_shared::Device) -> Result<(), AppError> {
     let supported = match action {
         "ssh.exec" | "ssh.tail" | "ssh.reboot" => device.ssh.is_some(),
-        "serial.tail" => device.serial.is_some(),
+        "serial.tail" | "serial.write" => device.serial.is_some(),
         "jlink.probe" | "jlink.flash" | "jlink.verify" | "jlink.reset" | "jlink.erase" => {
             device.jlink.is_some()
         }
@@ -279,6 +279,9 @@ fn validate_payload(action: &str, payload: Option<&ActionRequest>) -> Result<(),
         ),
         "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(AppError::BadRequest(
             "action `ssh.tail` requires a log path payload".into(),
+        )),
+        "serial.write" if value.is_none_or(|input| input.is_empty()) => Err(AppError::BadRequest(
+            "action `serial.write` requires a payload".into(),
         )),
         "jlink.flash" if value.is_none_or(|path| path.trim().is_empty()) => Err(
             AppError::BadRequest("action `jlink.flash` requires a firmware path payload".into()),
@@ -334,6 +337,10 @@ fn build_job_summary(
                 .as_ref()
                 .map(|serial| format!("serial: {} @ {} baud", serial.port, serial.baud))
         }),
+        "serial.write" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("input: {}", payload.escape_debug())),
         "ssh.reboot" => device.and_then(|device| {
             device
                 .ssh

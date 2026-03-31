@@ -1,17 +1,21 @@
-use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+use std::{collections::VecDeque, fs, os::unix::fs::PermissionsExt, path::Path, sync::Arc};
 
 use chrono::SecondsFormat;
+use device_hub_adapter_serial::{SerialAdapter, SerialAdapterError};
 use device_hub_server::{
     config::AppConfig,
     services::job_manager::{ActionPolicy, JobPolicyProvider},
 };
 use device_hub_shared::{
-    ActionRequest, Device, JlinkConfig, Job, JobEvidence, JobStatus, SshConfig,
+    ActionRequest, Device, JlinkConfig, Job, JobEvidence, JobStatus, SerialConfig, SshConfig,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_serial::SerialStream;
 
 use crate::helpers::{
     connect_ws, recv_ws_event, spawn_app, spawn_app_with_config,
-    spawn_app_with_config_and_job_policy, wait_for_job_events,
+    spawn_app_with_config_and_job_policy, spawn_app_with_config_job_policy_and_serial_adapter,
+    wait_for_job_events,
 };
 
 fn make_fake_ssh(dir: &Path, body: &str) -> std::path::PathBuf {
@@ -126,6 +130,66 @@ fn jlink_test_config(jlink_program: String) -> AppConfig {
         ssh_program: None,
         jlink_program: Some(jlink_program),
         artifacts_dir: None,
+    }
+}
+
+fn serial_test_config() -> AppConfig {
+    AppConfig {
+        devices: vec![Device {
+            id: "board-alpha".into(),
+            label: "Linux Board".into(),
+            ssh: None,
+            serial: Some(SerialConfig {
+                port: "/dev/test-serial".into(),
+                baud: 115200,
+            }),
+            jlink: None,
+        }],
+        ssh_program: None,
+        jlink_program: None,
+        artifacts_dir: None,
+    }
+}
+
+#[cfg(unix)]
+async fn spawn_serial_test_app(pair_count: usize) -> (crate::helpers::TestApp, Vec<SerialStream>) {
+    let mut masters = VecDeque::new();
+    let mut slaves = Vec::with_capacity(pair_count);
+    for _ in 0..pair_count {
+        let (master, slave) = SerialStream::pair().expect("serial pair");
+        masters.push_back(master);
+        slaves.push(slave);
+    }
+    let masters = Arc::new(std::sync::Mutex::new(masters));
+    let serial_adapter = SerialAdapter::with_stream_opener(4096, {
+        let masters = masters.clone();
+        move |_| {
+            masters
+                .lock()
+                .expect("serial master registry poisoned")
+                .pop_front()
+                .ok_or_else(|| {
+                    SerialAdapterError::Io(std::io::Error::other("serial test port already opened"))
+                })
+        }
+    });
+
+    let app = spawn_app_with_config_job_policy_and_serial_adapter(
+        serial_test_config(),
+        JobPolicyProvider::default(),
+        serial_adapter,
+    )
+    .await;
+    (app, slaves)
+}
+
+#[cfg(unix)]
+async fn cancel_job_if_running(app: &crate::helpers::TestApp, job_id: &str) {
+    let response = app.get_job(job_id).await;
+    let job: Job = response.json().await.expect("invalid job json");
+    if job.status == JobStatus::Running {
+        let cancelled = app.cancel_job(job_id).await;
+        assert!(cancelled.status().is_success());
     }
 }
 
@@ -281,6 +345,186 @@ async fn get_job_eventually_returns_a_failed_job_for_non_zero_ssh_exit() {
             .iter()
             .any(|event| event.message.contains("ssh.exec exited with status 7"))
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_tail_streams_device_output() {
+    let (app, mut slaves) = spawn_serial_test_app(1).await;
+    let mut slave = slaves.pop().expect("missing serial slave");
+
+    let tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid serial tail job json");
+    app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+
+    slave
+        .write_all(b"boot ok\n")
+        .await
+        .expect("write serial output");
+
+    let tail_events = wait_for_job_events(&app, &tail.id, 5).await;
+    assert!(tail_events.iter().any(|event| event.message == "boot ok"));
+
+    cancel_job_if_running(&app, &tail.id).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_write_without_active_tail_still_succeeds() {
+    let (app, _slaves) = spawn_serial_test_app(1).await;
+
+    let write: Job = app
+        .post_action(
+            "board-alpha",
+            "serial.write",
+            Some(&ActionRequest {
+                payload: Some("help\n".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid serial write job json");
+    let finished_write = app
+        .wait_for_job_status(&write.id, JobStatus::Succeeded)
+        .await;
+    assert_eq!(finished_write.action, "serial.write");
+
+    let write_events = wait_for_job_events(&app, &write.id, 6).await;
+    assert!(
+        write_events
+            .iter()
+            .any(|event| event.message.contains("wrote 5 bytes"))
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_write_succeeds_while_serial_tail_is_running() {
+    let (app, mut slaves) = spawn_serial_test_app(1).await;
+    let mut slave = slaves.pop().expect("missing serial slave");
+
+    let tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid serial tail job json");
+    let running_tail = app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+    assert_eq!(running_tail.action, "serial.tail");
+
+    let device_task = tokio::spawn(async move {
+        let mut command = [0_u8; 5];
+        slave
+            .read_exact(&mut command)
+            .await
+            .expect("read serial command");
+        assert_eq!(&command, b"help\n");
+        slave
+            .write_all(b"ok\n")
+            .await
+            .expect("write serial response");
+    });
+
+    let write: Job = app
+        .post_action(
+            "board-alpha",
+            "serial.write",
+            Some(&ActionRequest {
+                payload: Some("help\n".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid serial write job json");
+    let finished_write = app
+        .wait_for_job_status(&write.id, JobStatus::Succeeded)
+        .await;
+    assert_eq!(finished_write.action, "serial.write");
+
+    device_task.await.expect("join device task");
+
+    let write_events = wait_for_job_events(&app, &write.id, 6).await;
+    assert!(
+        write_events
+            .iter()
+            .any(|event| event.message.contains("wrote 5 bytes"))
+    );
+
+    let tail_events = wait_for_job_events(&app, &tail.id, 5).await;
+    assert!(tail_events.iter().any(|event| event.message == "ok"));
+
+    cancel_job_if_running(&app, &tail.id).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_tail_can_be_cancelled_cleanly() {
+    let (app, _slaves) = spawn_serial_test_app(1).await;
+
+    let tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid serial tail job json");
+    app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+
+    let cancelled = app.cancel_job(&tail.id).await;
+    assert!(cancelled.status().is_success());
+
+    let done = app
+        .wait_for_job_status(&tail.id, JobStatus::Cancelled)
+        .await;
+    assert_eq!(done.action, "serial.tail");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_tail_releases_session_after_cancel() {
+    let (app, mut slaves) = spawn_serial_test_app(2).await;
+    let mut second_slave = slaves.pop().expect("missing second serial slave");
+
+    let first_tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid first serial tail job json");
+    app.wait_for_job_status(&first_tail.id, JobStatus::Running)
+        .await;
+    let cancelled = app.cancel_job(&first_tail.id).await;
+    assert!(cancelled.status().is_success());
+    app.wait_for_job_status(&first_tail.id, JobStatus::Cancelled)
+        .await;
+
+    let second_tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid second serial tail job json");
+    app.wait_for_job_status(&second_tail.id, JobStatus::Running)
+        .await;
+
+    second_slave
+        .write_all(b"second session\n")
+        .await
+        .expect("write second serial output");
+
+    let second_tail_events = wait_for_job_events(&app, &second_tail.id, 5).await;
+    assert!(
+        second_tail_events
+            .iter()
+            .any(|event| event.message == "second session")
+    );
+
+    cancel_job_if_running(&app, &second_tail.id).await;
 }
 
 #[tokio::test]

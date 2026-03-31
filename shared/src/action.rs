@@ -11,6 +11,7 @@ pub enum ActionCapability {
     SshTail,
     SshReboot,
     SerialTail,
+    SerialWrite,
     JlinkProbe,
     JlinkFlash,
     JlinkVerify,

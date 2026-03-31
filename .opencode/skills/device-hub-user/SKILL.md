@@ -19,7 +19,7 @@ metadata:
 ## When to use me
 
 - The user wants to use Device Hub as an operator rather than modify its code.
-- The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, or `serial.tail`.
+- The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, `serial.tail`, or `serial.write`.
 - The user wants to look at job evidence, artifacts, timeout behavior, or rerun a previous job.
 - The user reports that the local UI or API is unavailable and wants help checking service health.
 
@@ -67,6 +67,10 @@ curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.tail \
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.tail \
   -H 'content-type: application/json' \
   -d 'null'
+
+curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.write \
+  -H 'content-type: application/json' \
+  -d '{"payload":"help\n"}'
 ```
 
 5. Check job status and events
@@ -106,17 +110,25 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 - `ssh.exec` requires a command string.
 - `ssh.tail` requires a log path.
 - `serial.tail` does not require a payload.
+- `serial.write` requires a payload string.
+- `serial.write` payloads may be raw text, newline-terminated commands, or control characters like Ctrl-C.
 - `ssh.reboot` does not require a payload.
 
 5. Start the action and capture the returned `job_id`.
-6. For follow-up inspection, prefer this order:
+6. If the user wants to send serial input and observe the response, prefer this order:
+
+- Start `serial.tail` first.
+- Start `serial.write` with the intended payload.
+- Inspect the tail job events for device output and the write job for write confirmation.
+
+7. For follow-up inspection, prefer this order:
 
 - `/api/jobs/<job-id>` for status
 - `/api/jobs/<job-id>/evidence` for summary and artifacts
 - `/api/jobs/<job-id>/events` for full history
 
-7. If the user wants another attempt, use the rerun endpoint instead of reconstructing arguments manually when possible.
-8. Report outcomes in operator language: device, action, job ID, current status, key evidence, and any next step.
+8. If the user wants another attempt, use the rerun endpoint instead of reconstructing arguments manually when possible.
+9. Report outcomes in operator language: device, action, job ID, current status, key evidence, and any next step.
 
 ## What not to include
 
@@ -140,11 +152,12 @@ Next: <useful next step or none>
 ## Guardrails
 
 - Do not claim a device supports an action unless the API/config confirms it.
-- Do not invent payloads for `ssh.exec` or `ssh.tail`; ask one short question if the value is missing.
+- Do not invent payloads for `ssh.exec`, `ssh.tail`, or `serial.write`; ask one short question if the value is missing.
 - Prefer using the rerun endpoint for repeat attempts so the same stored inputs are reused.
 - If the frontend is down but the backend is healthy, continue through the API instead of blocking.
 - If the backend is down, say so clearly and help restart or diagnose it before issuing device commands.
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
+- Treat `serial.write` as a short-lived job that confirms bytes were sent, not as the place to inspect device output.
 
 ## Customization notes
 
