@@ -280,6 +280,9 @@ fn validate_payload(action: &str, payload: Option<&ActionRequest>) -> Result<(),
         "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(AppError::BadRequest(
             "action `ssh.tail` requires a log path payload".into(),
         )),
+        "jlink.flash" if value.is_none_or(|path| path.trim().is_empty()) => Err(
+            AppError::BadRequest("action `jlink.flash` requires a firmware path payload".into()),
+        ),
         _ => Ok(()),
     }
 }
@@ -337,6 +340,13 @@ fn build_job_summary(
                 .as_ref()
                 .map(|ssh| format!("target: {}@{}", ssh.user, ssh.host))
         }),
+        "jlink.probe" | "jlink.verify" | "jlink.reset" | "jlink.erase" => device
+            .and_then(|device| device.jlink.as_ref())
+            .map(|jlink| format!("probe: {} on {}", jlink.serial, jlink.device)),
+        "jlink.flash" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("firmware: {payload}")),
         _ => job
             .payload
             .as_ref()

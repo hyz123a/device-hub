@@ -5,11 +5,15 @@ use std::{
 };
 
 use chrono::Utc;
+use device_hub_adapter_jlink::{
+    FlashRequest, JlinkAdapter, JlinkAdapterError, JlinkArtifact, JlinkExecution,
+};
 use device_hub_adapter_serial::SerialAdapter;
 use device_hub_adapter_ssh::{SshAdapter, SshCommand, SshStreamChannel};
 use device_hub_shared::{
     ActionRequest, Device, Job, JobStatus, LogChannel, LogEvent, LogLevel, LogSource,
 };
+use serde::Serialize;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -25,6 +29,7 @@ pub struct JobManager {
     events: EventBus,
     artifacts: ArtifactStore,
     ssh_adapter: SshAdapter,
+    jlink_adapter: JlinkAdapter,
     serial_adapter: SerialAdapter,
     policy_provider: JobPolicyProvider,
     tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
@@ -42,6 +47,7 @@ impl JobManager {
         events: EventBus,
         artifacts: ArtifactStore,
         ssh_adapter: SshAdapter,
+        jlink_adapter: JlinkAdapter,
         serial_adapter: SerialAdapter,
     ) -> Self {
         Self::new_with_policy(
@@ -49,6 +55,7 @@ impl JobManager {
             events,
             artifacts,
             ssh_adapter,
+            jlink_adapter,
             serial_adapter,
             JobPolicyProvider::default(),
         )
@@ -59,6 +66,7 @@ impl JobManager {
         events: EventBus,
         artifacts: ArtifactStore,
         ssh_adapter: SshAdapter,
+        jlink_adapter: JlinkAdapter,
         serial_adapter: SerialAdapter,
         policy_provider: JobPolicyProvider,
     ) -> Self {
@@ -67,6 +75,7 @@ impl JobManager {
             events,
             artifacts,
             ssh_adapter,
+            jlink_adapter,
             serial_adapter,
             policy_provider,
             tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -111,6 +120,7 @@ impl JobManager {
         let events = self.events.clone();
         let artifacts = self.artifacts.clone();
         let ssh_adapter = self.ssh_adapter.clone();
+        let jlink_adapter = self.jlink_adapter.clone();
         let serial_adapter = self.serial_adapter.clone();
         let tasks = self.tasks.clone();
         let device_locks = self.device_locks.clone();
@@ -139,6 +149,7 @@ impl JobManager {
                     &events,
                     &artifacts,
                     &ssh_adapter,
+                    &jlink_adapter,
                     &serial_adapter,
                     &job_id,
                     &device,
@@ -352,6 +363,7 @@ async fn execute_action(
     events: &EventBus,
     artifacts: &ArtifactStore,
     ssh_adapter: &SshAdapter,
+    jlink_adapter: &JlinkAdapter,
     serial_adapter: &SerialAdapter,
     job_id: &str,
     device: &Device,
@@ -371,6 +383,30 @@ async fn execute_action(
         }
         "ssh.tail" => {
             execute_ssh_tail(jobs, events, artifacts, ssh_adapter, &job, device, payload).await
+        }
+        "jlink.probe" => {
+            execute_jlink_probe(jobs, events, artifacts, jlink_adapter, &job, device).await
+        }
+        "jlink.flash" => {
+            execute_jlink_flash(
+                jobs,
+                events,
+                artifacts,
+                jlink_adapter,
+                &job,
+                device,
+                payload,
+            )
+            .await
+        }
+        "jlink.verify" => {
+            execute_jlink_verify(jobs, events, artifacts, jlink_adapter, &job, device).await
+        }
+        "jlink.reset" => {
+            execute_jlink_reset(jobs, events, artifacts, jlink_adapter, &job, device).await
+        }
+        "jlink.erase" => {
+            execute_jlink_erase(jobs, events, artifacts, jlink_adapter, &job, device).await
         }
         "serial.tail" => {
             execute_serial_tail(jobs, events, artifacts, serial_adapter, &job, device).await
@@ -590,10 +626,310 @@ async fn execute_serial_tail(
     }
 }
 
+async fn execute_jlink_probe(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    jlink_adapter: &JlinkAdapter,
+    job: &Job,
+    device: &Device,
+) {
+    let Some(config) = device.jlink.as_ref() else {
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing jlink configuration",
+        );
+        return;
+    };
+
+    events.publish(adapter_event_with_source(
+        job,
+        LogSource::Jlink,
+        LogChannel::System,
+        LogLevel::Info,
+        format!("probing J-Link {} for {}", config.serial, config.device),
+    ));
+
+    match jlink_adapter.probe(config).await {
+        Ok(execution) => {
+            persist_jlink_execution(events, artifacts, job, &execution);
+            succeed_job(jobs, events, artifacts, job, "jlink.probe completed");
+        }
+        Err(error) => fail_job_with_source(
+            jobs,
+            events,
+            artifacts,
+            job,
+            LogSource::Jlink,
+            persist_jlink_failure(events, artifacts, job, error),
+        ),
+    }
+}
+
+async fn execute_jlink_flash(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    jlink_adapter: &JlinkAdapter,
+    job: &Job,
+    device: &Device,
+    payload: Option<&ActionRequest>,
+) {
+    let Some(config) = device.jlink.as_ref() else {
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing jlink configuration",
+        );
+        return;
+    };
+    let firmware_path = payload
+        .and_then(|request| request.payload.as_deref())
+        .map(str::trim)
+        .unwrap_or_default();
+
+    events.publish(adapter_event_with_source(
+        job,
+        LogSource::Jlink,
+        LogChannel::System,
+        LogLevel::Info,
+        format!("flashing {} via J-Link {}", firmware_path, config.serial),
+    ));
+
+    match jlink_adapter
+        .flash(
+            config,
+            &FlashRequest {
+                firmware_path: firmware_path.to_owned(),
+            },
+        )
+        .await
+    {
+        Ok(execution) => {
+            persist_jlink_execution(events, artifacts, job, &execution);
+            succeed_job(jobs, events, artifacts, job, "jlink.flash completed");
+        }
+        Err(error) => fail_job_with_source(
+            jobs,
+            events,
+            artifacts,
+            job,
+            LogSource::Jlink,
+            persist_jlink_failure(events, artifacts, job, error),
+        ),
+    }
+}
+
+async fn execute_jlink_verify(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    jlink_adapter: &JlinkAdapter,
+    job: &Job,
+    device: &Device,
+) {
+    let Some(config) = device.jlink.as_ref() else {
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing jlink configuration",
+        );
+        return;
+    };
+
+    events.publish(adapter_event_with_source(
+        job,
+        LogSource::Jlink,
+        LogChannel::System,
+        LogLevel::Info,
+        format!(
+            "verifying target {} via J-Link {}",
+            config.device, config.serial
+        ),
+    ));
+
+    match jlink_adapter.verify(config).await {
+        Ok(execution) => {
+            persist_jlink_execution(events, artifacts, job, &execution);
+            succeed_job(jobs, events, artifacts, job, "jlink.verify completed");
+        }
+        Err(error) => fail_job_with_source(
+            jobs,
+            events,
+            artifacts,
+            job,
+            LogSource::Jlink,
+            persist_jlink_failure(events, artifacts, job, error),
+        ),
+    }
+}
+
+async fn execute_jlink_reset(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    jlink_adapter: &JlinkAdapter,
+    job: &Job,
+    device: &Device,
+) {
+    let Some(config) = device.jlink.as_ref() else {
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing jlink configuration",
+        );
+        return;
+    };
+
+    events.publish(adapter_event_with_source(
+        job,
+        LogSource::Jlink,
+        LogChannel::System,
+        LogLevel::Info,
+        format!(
+            "resetting target {} via J-Link {}",
+            config.device, config.serial
+        ),
+    ));
+
+    match jlink_adapter.reset(config).await {
+        Ok(execution) => {
+            persist_jlink_execution(events, artifacts, job, &execution);
+            succeed_job(jobs, events, artifacts, job, "jlink.reset completed");
+        }
+        Err(error) => fail_job_with_source(
+            jobs,
+            events,
+            artifacts,
+            job,
+            LogSource::Jlink,
+            persist_jlink_failure(events, artifacts, job, error),
+        ),
+    }
+}
+
+async fn execute_jlink_erase(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    jlink_adapter: &JlinkAdapter,
+    job: &Job,
+    device: &Device,
+) {
+    let Some(config) = device.jlink.as_ref() else {
+        fail_job(
+            jobs,
+            events,
+            artifacts,
+            job,
+            "device is missing jlink configuration",
+        );
+        return;
+    };
+
+    events.publish(adapter_event_with_source(
+        job,
+        LogSource::Jlink,
+        LogChannel::System,
+        LogLevel::Info,
+        format!(
+            "erasing target {} via J-Link {}",
+            config.device, config.serial
+        ),
+    ));
+
+    match jlink_adapter.erase(config).await {
+        Ok(execution) => {
+            persist_jlink_execution(events, artifacts, job, &execution);
+            succeed_job(jobs, events, artifacts, job, "jlink.erase completed");
+        }
+        Err(error) => fail_job(jobs, events, artifacts, job, error.to_string()),
+    }
+}
+
 fn publish_stream(events: &EventBus, job: &Job, channel: LogChannel, output: &str) {
     for line in output.lines().filter(|line| !line.is_empty()) {
         events.publish(adapter_event(job, channel.clone(), LogLevel::Info, line));
     }
+}
+
+fn persist_jlink_execution<T: Serialize>(
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    job: &Job,
+    execution: &JlinkExecution<T>,
+) {
+    for artifact in &execution.artifacts {
+        publish_jlink_artifact_logs(events, job, artifact);
+        if let Err(error) =
+            artifacts.write_named_artifact(&job.id, &artifact.name, &artifact.contents)
+        {
+            eprintln!(
+                "failed to persist job {} artifact {}: {error}",
+                job.id, artifact.name
+            );
+        }
+    }
+
+    match serde_json::to_vec_pretty(&execution.result) {
+        Ok(result_json) => {
+            if let Err(error) = artifacts.write_named_artifact(&job.id, "result.json", &result_json)
+            {
+                eprintln!("failed to persist job {} result.json: {error}", job.id);
+            }
+        }
+        Err(error) => eprintln!("failed to serialize job {} result payload: {error}", job.id),
+    }
+}
+
+fn publish_jlink_artifact_logs(events: &EventBus, job: &Job, artifact: &JlinkArtifact) {
+    let (channel, level) = match artifact.name.as_str() {
+        "jlink.stdout.log" => (LogChannel::Stdout, LogLevel::Info),
+        "jlink.stderr.log" => (LogChannel::Stderr, LogLevel::Warn),
+        _ => return,
+    };
+    let text = String::from_utf8_lossy(&artifact.contents);
+    for line in text.lines().filter(|line| !line.is_empty()) {
+        events.publish(adapter_event_with_source(
+            job,
+            LogSource::Jlink,
+            channel.clone(),
+            level.clone(),
+            line,
+        ));
+    }
+}
+
+fn persist_jlink_failure(
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    job: &Job,
+    error: JlinkAdapterError,
+) -> String {
+    if let Some(jlink_artifacts) = error.artifacts() {
+        for artifact in jlink_artifacts {
+            publish_jlink_artifact_logs(events, job, artifact);
+            if let Err(write_error) =
+                artifacts.write_named_artifact(&job.id, &artifact.name, &artifact.contents)
+            {
+                eprintln!(
+                    "failed to persist job {} artifact {}: {write_error}",
+                    job.id, artifact.name
+                );
+            }
+        }
+    }
+
+    error.to_string()
 }
 
 fn succeed_job(
@@ -618,9 +954,21 @@ fn fail_job(
     job: &Job,
     message: impl Into<String>,
 ) {
+    fail_job_with_source(jobs, events, artifacts, job, LogSource::Ssh, message);
+}
+
+fn fail_job_with_source(
+    jobs: &JobStore,
+    events: &EventBus,
+    artifacts: &ArtifactStore,
+    job: &Job,
+    source: LogSource,
+    message: impl Into<String>,
+) {
     let message = message.into();
-    events.publish(adapter_event(
+    events.publish(adapter_event_with_source(
         job,
+        source,
         LogChannel::System,
         LogLevel::Error,
         &message,

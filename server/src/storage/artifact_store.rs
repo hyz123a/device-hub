@@ -36,6 +36,22 @@ impl ArtifactStore {
         file.write_all(b"\n")
     }
 
+    pub fn write_named_artifact(
+        &self,
+        job_id: &str,
+        artifact_name: &str,
+        contents: &[u8],
+    ) -> io::Result<()> {
+        let file_name = Path::new(artifact_name)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| *value == artifact_name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid artifact name"))?;
+        let job_dir = self.job_dir(job_id);
+        fs::create_dir_all(&job_dir)?;
+        fs::write(job_dir.join(file_name), contents)
+    }
+
     pub fn read_events(&self, job_id: &str) -> io::Result<Option<Vec<LogEvent>>> {
         let path = self.job_dir(job_id).join("events.ndjson");
         if !path.exists() {

@@ -136,6 +136,9 @@ devices:
     jlink:
       serial: "123456789"
       device: STM32H743
+      interface: SWD
+      speed_khz: 4000
+      autoconnect: true
 
   - id: board-03
     label: "Full Dev Board"     # SSH + serial + J-Link
@@ -149,6 +152,9 @@ devices:
     jlink:
       serial: "987654321"
       device: STM32H743
+      interface: SWD
+      speed_khz: 4000
+      autoconnect: true
 ```
 
 Sensitive fields (passwords, key paths) support `$ENV_VAR` substitution to avoid storing secrets in the file.

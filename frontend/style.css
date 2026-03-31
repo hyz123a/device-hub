@@ -1283,8 +1283,20 @@ a {
 }
 
 @media (min-width: 768px) {
+  .md\:col-span-2 {
+    grid-column: span 2 / span 2;
+  }
+
+  .md\:col-start-3 {
+    grid-column-start: 3;
+  }
+
   .md\:grid-cols-\[minmax\(0\2c 1fr\)_auto\] {
     grid-template-columns: minmax(0,1fr) auto;
+  }
+
+  .md\:grid-cols-\[minmax\(0\2c 1fr\)_auto_auto\] {
+    grid-template-columns: minmax(0,1fr) auto auto;
   }
 
   .md\:pb-20 {

@@ -2,6 +2,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
+use device_hub_adapter_jlink::JlinkAdapter;
 use device_hub_adapter_serial::SerialAdapter;
 use device_hub_adapter_ssh::SshAdapter;
 use tower_http::cors::CorsLayer;
@@ -36,6 +37,7 @@ pub async fn build_router_with_job_policy(
     let AppConfig {
         devices: configured_devices,
         ssh_program,
+        jlink_program,
         artifacts_dir,
     } = config;
     let artifacts = ArtifactStore::new(artifacts_dir.unwrap_or_else(|| ".artifacts".into()));
@@ -46,12 +48,17 @@ pub async fn build_router_with_job_policy(
         Some(program) => SshAdapter::with_program(program),
         None => SshAdapter::new(),
     };
+    let jlink_adapter = match jlink_program {
+        Some(program) => JlinkAdapter::with_program(program),
+        None => JlinkAdapter::new(),
+    };
     let serial_adapter = SerialAdapter::new();
     let job_manager = JobManager::new_with_policy(
         jobs.clone(),
         events.clone(),
         artifacts.clone(),
         ssh_adapter,
+        jlink_adapter,
         serial_adapter,
         policy_provider,
     );
