@@ -39,6 +39,12 @@ pub struct SerialConfig {
 pub struct JlinkConfig {
     pub serial: String,
     pub device: String,
+    #[serde(default = "default_jlink_interface")]
+    pub interface: String,
+    #[serde(default = "default_jlink_speed_khz")]
+    pub speed_khz: u32,
+    #[serde(default = "default_jlink_autoconnect")]
+    pub autoconnect: bool,
 }
 
 impl Device {
@@ -52,4 +58,16 @@ impl Device {
             },
         }
     }
+}
+
+fn default_jlink_interface() -> String {
+    "SWD".into()
+}
+
+fn default_jlink_speed_khz() -> u32 {
+    4000
+}
+
+fn default_jlink_autoconnect() -> bool {
+    true
 }

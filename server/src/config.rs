@@ -11,6 +11,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub ssh_program: Option<String>,
     #[serde(default)]
+    pub jlink_program: Option<String>,
+    #[serde(default)]
     pub artifacts_dir: Option<String>,
 }
 

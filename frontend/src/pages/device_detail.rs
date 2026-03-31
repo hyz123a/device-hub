@@ -16,6 +16,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
     let error = use_state(|| Option::<String>::None);
     let exec_command = use_state(|| "uname -a".to_owned());
     let tail_path = use_state(String::new);
+    let jlink_firmware_path = use_state(String::new);
     let pending_action = use_state(|| Option::<String>::None);
     let running_ssh_tail = use_state(|| Option::<Job>::None);
     let running_serial_tail = use_state(|| Option::<Job>::None);
@@ -435,6 +436,205 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                             html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Starting serial.tail..."}</p> }
                                         } else if action == "serial.tail.stop" {
                                             html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Stopping serial.tail..."}</p> }
+                                        } else {
+                                            Html::default()
+                                        }
+                                    } else {
+                                        Html::default()
+                                    }
+                                }
+                            </article>
+                        }
+                    } else {
+                        Html::default()
+                    }
+                } else {
+                    Html::default()
+                }
+            }
+            {
+                if let Some(detail) = (*detail).clone() {
+                    if detail.capabilities.has_jlink {
+                        let device_id = detail.device.id.clone();
+                        let pending_action_value = (*pending_action).clone();
+                        let jlink_firmware_path_value = (*jlink_firmware_path).clone();
+
+                        let on_jlink_firmware_input = {
+                            let jlink_firmware_path = jlink_firmware_path.clone();
+                            Callback::from(move |event: InputEvent| {
+                                let input: web_sys::HtmlInputElement = event.target_unchecked_into();
+                                jlink_firmware_path.set(input.value());
+                            })
+                        };
+
+                        let on_jlink_probe = {
+                            let device_id = device_id.clone();
+                            let error = error.clone();
+                            let pending_action = pending_action.clone();
+                            let navigator = navigator.clone();
+                            Callback::from(move |_| {
+                                let device_id = device_id.clone();
+                                let error = error.clone();
+                                let pending_action = pending_action.clone();
+                                let navigator = navigator.clone();
+                                pending_action.set(Some("jlink.probe".to_owned()));
+                                spawn_local(async move {
+                                    match api::start_action(&device_id, "jlink.probe", None).await {
+                                        Ok(job) => {
+                                            pending_action.set(None);
+                                            error.set(None);
+                                            if let Some(navigator) = navigator {
+                                                navigator.push(&Route::JobDetail { job_id: job.id });
+                                            }
+                                        }
+                                        Err(message) => {
+                                            pending_action.set(None);
+                                            error.set(Some(message));
+                                        }
+                                    }
+                                });
+                            })
+                        };
+
+                        let on_jlink_flash = {
+                            let device_id = device_id.clone();
+                            let error = error.clone();
+                            let pending_action = pending_action.clone();
+                            let navigator = navigator.clone();
+                            let jlink_firmware_path = jlink_firmware_path.clone();
+                            Callback::from(move |_| {
+                                let device_id = device_id.clone();
+                                let firmware_path = (*jlink_firmware_path).trim().to_owned();
+                                let error = error.clone();
+                                let pending_action = pending_action.clone();
+                                let navigator = navigator.clone();
+                                pending_action.set(Some("jlink.flash".to_owned()));
+                                spawn_local(async move {
+                                    match api::start_action(&device_id, "jlink.flash", Some(firmware_path)).await {
+                                        Ok(job) => {
+                                            pending_action.set(None);
+                                            error.set(None);
+                                            if let Some(navigator) = navigator {
+                                                navigator.push(&Route::JobDetail { job_id: job.id });
+                                            }
+                                        }
+                                        Err(message) => {
+                                            pending_action.set(None);
+                                            error.set(Some(message));
+                                        }
+                                    }
+                                });
+                            })
+                        };
+
+                        let on_jlink_verify = {
+                            let device_id = device_id.clone();
+                            let error = error.clone();
+                            let pending_action = pending_action.clone();
+                            let navigator = navigator.clone();
+                            Callback::from(move |_| {
+                                let device_id = device_id.clone();
+                                let error = error.clone();
+                                let pending_action = pending_action.clone();
+                                let navigator = navigator.clone();
+                                pending_action.set(Some("jlink.verify".to_owned()));
+                                spawn_local(async move {
+                                    match api::start_action(&device_id, "jlink.verify", None).await {
+                                        Ok(job) => {
+                                            pending_action.set(None);
+                                            error.set(None);
+                                            if let Some(navigator) = navigator {
+                                                navigator.push(&Route::JobDetail { job_id: job.id });
+                                            }
+                                        }
+                                        Err(message) => {
+                                            pending_action.set(None);
+                                            error.set(Some(message));
+                                        }
+                                    }
+                                });
+                            })
+                        };
+
+                        let on_jlink_reset = {
+                            let device_id = device_id.clone();
+                            let error = error.clone();
+                            let pending_action = pending_action.clone();
+                            let navigator = navigator.clone();
+                            Callback::from(move |_| {
+                                let device_id = device_id.clone();
+                                let error = error.clone();
+                                let pending_action = pending_action.clone();
+                                let navigator = navigator.clone();
+                                pending_action.set(Some("jlink.reset".to_owned()));
+                                spawn_local(async move {
+                                    match api::start_action(&device_id, "jlink.reset", None).await {
+                                        Ok(job) => {
+                                            pending_action.set(None);
+                                            error.set(None);
+                                            if let Some(navigator) = navigator {
+                                                navigator.push(&Route::JobDetail { job_id: job.id });
+                                            }
+                                        }
+                                        Err(message) => {
+                                            pending_action.set(None);
+                                            error.set(Some(message));
+                                        }
+                                    }
+                                });
+                            })
+                        };
+
+                        html! {
+                            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"J-Link actions"}</span>
+                                <div class="mt-4 grid items-end gap-4 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+                                    <div class="grid gap-2 text-sm text-ink-muted">
+                                        <span>{"Probe target"}</span>
+                                        <p class="m-0">{"Query the configured probe and capture structured evidence for the connected target."}</p>
+                                    </div>
+                                    <button
+                                        class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55 md:col-start-3"
+                                        onclick={on_jlink_probe}
+                                        disabled={pending_action_value.is_some()}
+                                    >{"Run jlink.probe"}</button>
+                                    <label class="grid gap-2 text-sm text-ink-muted md:col-span-2">
+                                        <span>{"Firmware path"}</span>
+                                        <input
+                                            class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                            value={jlink_firmware_path_value}
+                                            oninput={on_jlink_firmware_input}
+                                            placeholder="/tmp/firmware.bin"
+                                        />
+                                    </label>
+                                    <button
+                                        class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55"
+                                        onclick={on_jlink_flash}
+                                        disabled={pending_action_value.is_some()}
+                                    >{"Run jlink.flash"}</button>
+                                    <div class="grid gap-2 text-sm text-ink-muted">
+                                        <span>{"Verify target memory"}</span>
+                                        <p class="m-0">{"Run a verification pass and store the tool transcript plus structured result payload."}</p>
+                                    </div>
+                                    <button
+                                        class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55 md:col-start-3"
+                                        onclick={on_jlink_verify}
+                                        disabled={pending_action_value.is_some()}
+                                    >{"Run jlink.verify"}</button>
+                                    <div class="grid gap-2 text-sm text-ink-muted">
+                                        <span>{"Reset target"}</span>
+                                        <p class="m-0">{"Request a target reset through the configured J-Link probe."}</p>
+                                    </div>
+                                    <button
+                                        class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55 md:col-start-3"
+                                        onclick={on_jlink_reset}
+                                        disabled={pending_action_value.is_some()}
+                                    >{"Run jlink.reset"}</button>
+                                </div>
+                                {
+                                    if let Some(action) = pending_action_value {
+                                        if action.starts_with("jlink.") {
+                                            html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{format!("Starting {action}...")}</p> }
                                         } else {
                                             Html::default()
                                         }

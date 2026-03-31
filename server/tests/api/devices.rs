@@ -52,6 +52,9 @@ async fn get_device_returns_detail_for_known_device() {
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),
                     device: "STM32H743".into(),
+                    interface: "SWD".into(),
+                    speed_khz: 4000,
+                    autoconnect: true,
                 }),
             },
             capabilities: DeviceConnectionSummary {

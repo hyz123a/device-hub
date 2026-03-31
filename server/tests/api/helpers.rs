@@ -159,6 +159,9 @@ fn test_config() -> AppConfig {
                 jlink: Some(JlinkConfig {
                     serial: "123456789".into(),
                     device: "STM32H743".into(),
+                    interface: "SWD".into(),
+                    speed_khz: 4000,
+                    autoconnect: true,
                 }),
             },
             Device {
@@ -190,10 +193,14 @@ fn test_config() -> AppConfig {
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),
                     device: "STM32H743".into(),
+                    interface: "SWD".into(),
+                    speed_khz: 4000,
+                    autoconnect: true,
                 }),
             },
         ],
         ssh_program: None,
+        jlink_program: None,
         artifacts_dir: None,
     }
 }

@@ -18,8 +18,8 @@
 - [ ] Add artifact export/download flow for completed jobs
 - [x] Add `serial` support to the shared schema, device detail page, and server action routing so `serial.tail` becomes a first-class job like `ssh.tail`
 - [x] Implement a `device-hub-adapter-serial` crate with bounded log streaming, cancellation support, and unified `LogEvent` emission
-- [ ] Add J-Link action endpoints and UI controls for `jlink.probe`, `jlink.flash`, `jlink.verify`, and `jlink.reset`
-- [ ] Extend the J-Link adapter to return structured result payloads and artifact files instead of relying only on raw tool text
+- [x] Add J-Link action endpoints and UI controls for `jlink.probe`, `jlink.flash`, `jlink.verify`, and `jlink.reset`
+- [x] Extend the J-Link adapter to return structured result payloads and artifact files instead of relying only on raw tool text
 - [x] Add per-action timeout and safe teardown policies in the job runner so failed or cancelled jobs leave devices in a known state
 - [x] Surface richer job evidence in the Web UI, including artifact lists, download links, and action-specific summaries for AI/human diagnosis
 - [x] Add an API/UI flow to rerun a previous job with the same device, action, and arguments to tighten the harness-debug loop

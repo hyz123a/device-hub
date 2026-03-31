@@ -25,6 +25,17 @@ fn make_fake_ssh(dir: &Path, body: &str) -> std::path::PathBuf {
     script_path
 }
 
+fn make_fake_jlink(dir: &Path, body: &str) -> std::path::PathBuf {
+    let script_path = dir.join("fake-jlink.sh");
+    fs::write(&script_path, format!("#!/bin/sh\nset -eu\n{body}\n")).expect("write fake jlink");
+    let mut permissions = fs::metadata(&script_path)
+        .expect("fake jlink metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script_path, permissions).expect("chmod fake jlink");
+    script_path
+}
+
 fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
     AppConfig {
         devices: vec![
@@ -36,6 +47,9 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                 jlink: Some(JlinkConfig {
                     serial: "123456789".into(),
                     device: "STM32H743".into(),
+                    interface: "SWD".into(),
+                    speed_khz: 4000,
+                    autoconnect: true,
                 }),
             },
             Device {
@@ -51,6 +65,7 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
             },
         ],
         ssh_program: Some(ssh_program),
+        jlink_program: None,
         artifacts_dir: None,
     }
 }
@@ -81,10 +96,35 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),
                     device: "STM32H743".into(),
+                    interface: "SWD".into(),
+                    speed_khz: 4000,
+                    autoconnect: true,
                 }),
             },
         ],
         ssh_program: Some(ssh_program),
+        jlink_program: None,
+        artifacts_dir: None,
+    }
+}
+
+fn jlink_test_config(jlink_program: String) -> AppConfig {
+    AppConfig {
+        devices: vec![Device {
+            id: "board-zeta".into(),
+            label: "J-Link Board".into(),
+            ssh: None,
+            serial: None,
+            jlink: Some(JlinkConfig {
+                serial: "123456789".into(),
+                device: "STM32H743".into(),
+                interface: "SWD".into(),
+                speed_khz: 4000,
+                autoconnect: true,
+            }),
+        }],
+        ssh_program: None,
+        jlink_program: Some(jlink_program),
         artifacts_dir: None,
     }
 }
@@ -241,6 +281,153 @@ async fn get_job_eventually_returns_a_failed_job_for_non_zero_ssh_exit() {
             .iter()
             .any(|event| event.message.contains("ssh.exec exited with status 7"))
     );
+}
+
+#[tokio::test]
+async fn jlink_flash_requires_a_firmware_path_payload() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_jlink(tempdir.path(), "printf 'unused\\n'");
+    let app = spawn_app_with_config(jlink_test_config(script.display().to_string())).await;
+
+    let response = app.post_action("board-zeta", "jlink.flash", None).await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(
+        body["error"],
+        "bad request: action `jlink.flash` requires a firmware path payload"
+    );
+}
+
+#[tokio::test]
+async fn jlink_probe_persists_structured_result_and_artifacts() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let artifacts_dir = tempdir.path().join("artifacts");
+    let script = make_fake_jlink(
+        tempdir.path(),
+        "script=\"\"\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = \"-CommandFile\" ]; then script=$2; shift 2; else shift; fi; done\nprintf 'probe header\\n'\ncat \"$script\"",
+    );
+    let mut config = jlink_test_config(script.display().to_string());
+    config.artifacts_dir = Some(artifacts_dir.display().to_string());
+    let app = spawn_app_with_config(config).await;
+
+    let created: Job = app
+        .post_action("board-zeta", "jlink.probe", None)
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+
+    let job = app
+        .wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+    assert_eq!(job.action, "jlink.probe");
+
+    let events = wait_for_job_events(&app, &created.id, 5).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message.contains("probing J-Link 123456789"))
+    );
+    assert!(events.iter().any(|event| event.message == "probe header"));
+
+    let evidence: JobEvidence = app
+        .get_job_evidence(&created.id)
+        .await
+        .json()
+        .await
+        .expect("invalid evidence json");
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "result.json")
+    );
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "jlink.command")
+    );
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "jlink.stdout.log")
+    );
+
+    let result_json = fs::read_to_string(
+        app.artifacts_dir
+            .as_ref()
+            .expect("artifacts dir")
+            .join("jobs")
+            .join(&created.id)
+            .join("result.json"),
+    )
+    .expect("read result.json");
+    let result_value: serde_json::Value =
+        serde_json::from_str(&result_json).expect("parse result json");
+    assert_eq!(result_value["serial"], "123456789");
+    assert_eq!(result_value["device"], "STM32H743");
+    assert_eq!(result_value["connected"], true);
+}
+
+#[tokio::test]
+async fn jlink_reset_failure_still_persists_jlink_logs() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let artifacts_dir = tempdir.path().join("artifacts");
+    let script = make_fake_jlink(
+        tempdir.path(),
+        "printf 'reset start\\n'\nprintf 'dap failed\\n' >&2\nexit 1",
+    );
+    let mut config = jlink_test_config(script.display().to_string());
+    config.artifacts_dir = Some(artifacts_dir.display().to_string());
+    let app = spawn_app_with_config(config).await;
+
+    let created: Job = app
+        .post_action("board-zeta", "jlink.reset", None)
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+
+    let job = app
+        .wait_for_job_status(&created.id, JobStatus::Failed)
+        .await;
+    assert_eq!(job.action, "jlink.reset");
+
+    let evidence: JobEvidence = app
+        .get_job_evidence(&created.id)
+        .await
+        .json()
+        .await
+        .expect("invalid evidence json");
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "jlink.command")
+    );
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "jlink.stdout.log")
+    );
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "jlink.stderr.log")
+    );
+
+    let events = wait_for_job_events(&app, &created.id, 7).await;
+    assert!(events.iter().any(|event| {
+        event.source == device_hub_shared::LogSource::Jlink && event.message == "reset start"
+    }));
+    assert!(events.iter().any(|event| {
+        event.source == device_hub_shared::LogSource::Jlink && event.message == "dap failed"
+    }));
 }
 
 #[tokio::test]

@@ -14,6 +14,9 @@ devices:
     jlink:
       serial: "123456789"
       device: STM32H743
+      interface: SWD
+      speed_khz: 4000
+      autoconnect: true
 
   - id: board-03
     label: Full Dev Board
@@ -21,6 +24,3 @@ devices:
       host: 192.168.1.102
       user: root
       key: $SSH_KEY_PATH
-    jlink:
-      serial: "987654321"
-      device: STM32H743
