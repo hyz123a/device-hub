@@ -21,7 +21,7 @@ pub async fn root() -> Json<serde_json::Value> {
 }
 
 pub async fn list_devices(State(state): State<AppState>) -> Json<Vec<device_hub_shared::Device>> {
-    Json(state.devices.list())
+    Json(state.use_cases.list_devices())
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -33,21 +33,14 @@ pub async fn list_jobs(
     State(state): State<AppState>,
     Query(query): Query<ListJobsQuery>,
 ) -> Json<Vec<Job>> {
-    let mut jobs = state.jobs.list();
-    if let Some(device_id) = query.device_id {
-        jobs.retain(|job| job.device_id == device_id);
-    }
-    Json(jobs)
+    Json(state.use_cases.list_jobs(query.device_id.as_deref()))
 }
 
 pub async fn get_device(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Result<Json<device_hub_shared::DeviceDetail>, AppError> {
-    let device = state
-        .devices
-        .get(&device_id)
-        .ok_or(AppError::DeviceNotFound)?;
+    let device = state.use_cases.get_device(&device_id)?;
     Ok(Json(device.detail()))
 }
 
@@ -56,13 +49,10 @@ pub async fn start_action(
     Path((device_id, action)): Path<(String, String)>,
     Json(payload): Json<Option<ActionRequest>>,
 ) -> Result<Json<Job>, AppError> {
-    let device = state
-        .devices
-        .get(&device_id)
-        .ok_or(AppError::DeviceNotFound)?;
-    validate_action(&action, &device)?;
-    validate_payload(&action, payload.as_ref())?;
-    let job = state.job_manager.start(device, action, payload).await?;
+    let job = state
+        .use_cases
+        .start_action(&device_id, action, payload)
+        .await?;
     Ok(Json(job))
 }
 
@@ -70,7 +60,7 @@ pub async fn get_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<Job>, AppError> {
-    let job = state.jobs.get(&job_id).ok_or(AppError::JobNotFound)?;
+    let job = state.use_cases.get_job(&job_id)?;
     Ok(Json(job))
 }
 
@@ -78,7 +68,7 @@ pub async fn get_job_evidence(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobEvidence>, AppError> {
-    let job = state.jobs.get(&job_id).ok_or(AppError::JobNotFound)?;
+    let job = state.use_cases.get_job(&job_id)?;
     let events = state
         .artifacts
         .read_events(&job_id)
@@ -93,7 +83,7 @@ pub async fn get_job_evidence(
         .artifacts
         .list_job_artifacts(&job_id)
         .map_err(|error| AppError::Internal(error.to_string()))?;
-    let device = state.devices.get(&job.device_id);
+    let device = state.use_cases.get_device(&job.device_id).ok();
 
     Ok(Json(JobEvidence {
         summary: build_job_summary(&job, device.as_ref(), &events, &artifacts),
@@ -107,9 +97,7 @@ pub async fn get_job_events(
     Path(job_id): Path<String>,
     Query(query): Query<JobEventsQuery>,
 ) -> Result<Json<Vec<LogEvent>>, AppError> {
-    if state.jobs.get(&job_id).is_none() {
-        return Err(AppError::JobNotFound);
-    }
+    state.use_cases.get_job(&job_id)?;
 
     if let Some(events) = state
         .artifacts
@@ -140,7 +128,7 @@ pub async fn cancel_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<Job>, AppError> {
-    let job = state.job_manager.cancel(&job_id).await?;
+    let job = state.use_cases.cancel_job(&job_id).await?;
     Ok(Json(job))
 }
 
@@ -148,18 +136,7 @@ pub async fn rerun_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<Job>, AppError> {
-    let previous = state.jobs.get(&job_id).ok_or(AppError::JobNotFound)?;
-    let device = state
-        .devices
-        .get(&previous.device_id)
-        .ok_or(AppError::DeviceNotFound)?;
-    let payload = previous.payload.clone().map(|payload| ActionRequest {
-        payload: Some(payload),
-    });
-    let job = state
-        .job_manager
-        .start(device, previous.action.clone(), payload)
-        .await?;
+    let job = state.use_cases.rerun_job(&job_id).await?;
     Ok(Json(job))
 }
 
@@ -167,9 +144,7 @@ pub async fn download_job_artifact(
     State(state): State<AppState>,
     Path((job_id, artifact_name)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    if state.jobs.get(&job_id).is_none() {
-        return Err(AppError::JobNotFound);
-    }
+    state.use_cases.get_job(&job_id)?;
 
     let path = state
         .artifacts
@@ -254,50 +229,6 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, state: AppState, fi
                 }
             }
         }
-    }
-}
-
-fn validate_action(action: &str, device: &device_hub_shared::Device) -> Result<(), AppError> {
-    let supported = match action {
-        "ssh.exec" | "ssh.tail" | "ssh.reboot" => device.ssh.is_some(),
-        "serial.tail" | "serial.write" => device.serial.is_some(),
-        "jlink.probe" | "jlink.flash" | "jlink.verify" | "jlink.reset" | "jlink.erase" => {
-            device.jlink.is_some()
-        }
-        _ => {
-            return Err(AppError::BadRequest(format!(
-                "unsupported action `{action}`"
-            )));
-        }
-    };
-
-    if supported {
-        Ok(())
-    } else {
-        Err(AppError::BadRequest(format!(
-            "device `{}` does not support action `{action}`",
-            device.id
-        )))
-    }
-}
-
-fn validate_payload(action: &str, payload: Option<&ActionRequest>) -> Result<(), AppError> {
-    let value = payload.and_then(|request| request.payload.as_ref());
-
-    match action {
-        "ssh.exec" if value.is_none_or(|command| command.trim().is_empty()) => Err(
-            AppError::BadRequest("action `ssh.exec` requires a command payload".into()),
-        ),
-        "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(AppError::BadRequest(
-            "action `ssh.tail` requires a log path payload".into(),
-        )),
-        "serial.write" if value.is_none_or(|input| input.is_empty()) => Err(AppError::BadRequest(
-            "action `serial.write` requires a payload".into(),
-        )),
-        "jlink.flash" if value.is_none_or(|path| path.trim().is_empty()) => Err(
-            AppError::BadRequest("action `jlink.flash` requires a firmware path payload".into()),
-        ),
-        _ => Ok(()),
     }
 }
 

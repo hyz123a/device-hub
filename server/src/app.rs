@@ -5,6 +5,7 @@ use axum::{
 use device_hub_adapter_jlink::JlinkAdapter;
 use device_hub_adapter_serial::SerialAdapter;
 use device_hub_adapter_ssh::SshAdapter;
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 use crate::{
@@ -12,19 +13,21 @@ use crate::{
     config::AppConfig,
     events::EventBus,
     frontend::{self, FrontendAssets},
-    services::job_manager::{JobManager, JobPolicyProvider},
+    services::{
+        adapter_action_runner::AdapterActionRunner,
+        job_manager::{JobManager, JobPolicyProvider},
+    },
     storage::{
         artifact_store::ArtifactStore, device_registry::DeviceRegistry, job_store::JobStore,
     },
+    use_cases::AppUseCases,
 };
 
 #[derive(Clone)]
 pub struct AppState {
-    pub devices: DeviceRegistry,
-    pub jobs: JobStore,
+    pub use_cases: AppUseCases,
     pub events: EventBus,
     pub artifacts: ArtifactStore,
-    pub job_manager: JobManager,
     pub frontend: FrontendAssets,
 }
 
@@ -40,7 +43,24 @@ pub async fn build_router_with_job_policy(
         .await
 }
 
-pub async fn build_router_with_job_policy_and_serial_adapter(
+pub async fn build_router_with_job_policy_and_serial_stream_opener(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+    max_message_bytes: usize,
+    opener: impl Fn(
+        &device_hub_shared::SerialConfig,
+    ) -> Result<tokio_serial::SerialStream, std::io::Error>
+    + Send
+    + Sync
+    + 'static,
+) -> Router {
+    let serial_adapter = SerialAdapter::with_stream_opener(max_message_bytes, move |config| {
+        opener(config).map_err(device_hub_adapter_serial::SerialAdapterError::Io)
+    });
+    build_router_with_job_policy_and_serial_adapter(config, policy_provider, serial_adapter).await
+}
+
+async fn build_router_with_job_policy_and_serial_adapter(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
     serial_adapter: SerialAdapter,
@@ -63,24 +83,26 @@ pub async fn build_router_with_job_policy_and_serial_adapter(
         Some(program) => JlinkAdapter::with_program(program),
         None => JlinkAdapter::new(),
     };
+    let action_runner = Arc::new(AdapterActionRunner::new(
+        ssh_adapter,
+        jlink_adapter,
+        serial_adapter,
+    ));
     let frontend = FrontendAssets::load_from_embedded_bundle()
         .expect("failed to load embedded frontend assets");
     let job_manager = JobManager::new_with_policy(
         jobs.clone(),
         events.clone(),
         artifacts.clone(),
-        ssh_adapter,
-        jlink_adapter,
-        serial_adapter,
+        action_runner,
         policy_provider,
     );
+    let use_cases = AppUseCases::new(devices.clone(), jobs.clone(), job_manager.clone());
 
     let state = AppState {
-        devices,
-        jobs,
+        use_cases,
         events,
         artifacts,
-        job_manager,
         frontend,
     };
 
