@@ -33,10 +33,21 @@ server/src/
   config.rs
   error.rs
   api/
+  ports.rs
+  use_cases.rs
   services/
   storage/
   events/
 ```
+
+Current `server/` layering follows a lightweight hexagonal split:
+
+- `api/` is the inbound HTTP/WebSocket adapter.
+- `use_cases.rs` owns application actions such as start, cancel, and rerun.
+- `services/job_manager.rs` owns job lifecycle orchestration, locking, and timeout policy.
+- `ports.rs` defines outbound abstractions that the core depends on.
+- `services/adapter_action_runner.rs` is a driven adapter that implements the action-running port using SSH, serial, and J-Link crates.
+- `app.rs` is the composition root that wires concrete adapters into ports.
 
 ### `shared/`
 
@@ -57,6 +68,7 @@ Example types:
 
 - Encapsulates external tool and protocol integration.
 - Keeps transport-specific behavior out of API handlers.
+- Concrete adapter crates should be referenced from the composition root or driven-adapter layer, not from use cases or job lifecycle orchestration.
 
 First adapters:
 
@@ -166,6 +178,7 @@ Sensitive fields (passwords, key paths) support `$ENV_VAR` substitution to avoid
 - Browser talks only to local HTTP server.
 - Server owns all device actions.
 - AI skills call the same HTTP API instead of running shell commands directly.
+- The HTTP layer calls use cases instead of reaching directly into storage or concrete adapter implementations.
 
 ### Jobs
 
@@ -173,6 +186,7 @@ Sensitive fields (passwords, key paths) support `$ENV_VAR` substitution to avoid
 - API returns a `job_id` immediately.
 - Execution progress and logs flow through a unified event stream.
 - Jobs are cancelled via `DELETE /api/jobs/{job_id}`; the server signals the adapter to stop and transitions the job to `cancelled`.
+- Job lifecycle rules live in the core job manager; concrete device execution is delegated through an outbound port.
 
 Job states:
 

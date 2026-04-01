@@ -15,6 +15,7 @@
 - [x] Migrate `frontend` styling to Tailwind CSS by scanning `frontend/src/**/*.rs`, compiling a generated stylesheet, and switching `frontend/index.html` to load it
 
 ## Next
+- [x] Refactor `server` toward a real hexagonal architecture by introducing explicit ports/use cases and removing direct core dependencies on concrete adapters
 - [ ] Add artifact export/download flow for completed jobs
 - [x] Add `serial` support to the shared schema, device detail page, and server action routing so `serial.tail` becomes a first-class job like `ssh.tail`
 - [x] Implement a `device-hub-adapter-serial` crate with bounded log streaming, cancellation support, and unified `LogEvent` emission

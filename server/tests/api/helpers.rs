@@ -1,8 +1,8 @@
 use std::{path::PathBuf, time::Duration};
 
-use device_hub_adapter_serial::SerialAdapter;
 use device_hub_server::{
-    app::build_router_with_job_policy_and_serial_adapter, config::AppConfig,
+    app::{build_router_with_job_policy, build_router_with_job_policy_and_serial_stream_opener},
+    config::AppConfig,
     services::job_manager::JobPolicyProvider,
 };
 use device_hub_shared::{
@@ -127,23 +127,48 @@ pub async fn spawn_app_with_config_and_job_policy(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
 ) -> TestApp {
-    spawn_app_with_config_job_policy_and_serial_adapter(
-        config,
-        policy_provider,
-        SerialAdapter::new(),
-    )
-    .await
+    let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
+    let app = build_router_with_job_policy(config, policy_provider).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind random port");
+    let port = listener
+        .local_addr()
+        .expect("failed to read local addr")
+        .port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("test server crashed");
+    });
+
+    TestApp {
+        address: format!("http://127.0.0.1:{port}"),
+        api_client: reqwest::Client::new(),
+        artifacts_dir,
+    }
 }
 
-pub async fn spawn_app_with_config_job_policy_and_serial_adapter(
+pub async fn spawn_app_with_config_job_policy_and_serial_stream_opener(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
-    serial_adapter: SerialAdapter,
+    max_message_bytes: usize,
+    opener: impl Fn(
+        &device_hub_shared::SerialConfig,
+    ) -> Result<tokio_serial::SerialStream, std::io::Error>
+    + Send
+    + Sync
+    + 'static,
 ) -> TestApp {
     let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
-    let app =
-        build_router_with_job_policy_and_serial_adapter(config, policy_provider, serial_adapter)
-            .await;
+    let app = build_router_with_job_policy_and_serial_stream_opener(
+        config,
+        policy_provider,
+        max_message_bytes,
+        opener,
+    )
+    .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("failed to bind random port");

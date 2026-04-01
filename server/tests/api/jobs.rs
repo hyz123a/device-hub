@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, fs, os::unix::fs::PermissionsExt, path::Path, sync::Arc};
 
 use chrono::SecondsFormat;
-use device_hub_adapter_serial::{SerialAdapter, SerialAdapterError};
 use device_hub_server::{
     config::AppConfig,
     services::job_manager::{ActionPolicy, JobPolicyProvider},
@@ -14,8 +13,8 @@ use tokio_serial::SerialStream;
 
 use crate::helpers::{
     connect_ws, recv_ws_event, spawn_app, spawn_app_with_config,
-    spawn_app_with_config_and_job_policy, spawn_app_with_config_job_policy_and_serial_adapter,
-    wait_for_job_events,
+    spawn_app_with_config_and_job_policy,
+    spawn_app_with_config_job_policy_and_serial_stream_opener, wait_for_job_events,
 };
 
 fn make_fake_ssh(dir: &Path, body: &str) -> std::path::PathBuf {
@@ -161,23 +160,18 @@ async fn spawn_serial_test_app(pair_count: usize) -> (crate::helpers::TestApp, V
         slaves.push(slave);
     }
     let masters = Arc::new(std::sync::Mutex::new(masters));
-    let serial_adapter = SerialAdapter::with_stream_opener(4096, {
-        let masters = masters.clone();
+    let opener_masters = masters.clone();
+    let app = spawn_app_with_config_job_policy_and_serial_stream_opener(
+        serial_test_config(),
+        JobPolicyProvider::default(),
+        4096,
         move |_| {
-            masters
+            opener_masters
                 .lock()
                 .expect("serial master registry poisoned")
                 .pop_front()
-                .ok_or_else(|| {
-                    SerialAdapterError::Io(std::io::Error::other("serial test port already opened"))
-                })
-        }
-    });
-
-    let app = spawn_app_with_config_job_policy_and_serial_adapter(
-        serial_test_config(),
-        JobPolicyProvider::default(),
-        serial_adapter,
+                .ok_or_else(|| std::io::Error::other("serial test port already opened"))
+        },
     )
     .await;
     (app, slaves)
