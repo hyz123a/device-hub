@@ -669,6 +669,77 @@ async fn jlink_reset_failure_still_persists_jlink_logs() {
 }
 
 #[tokio::test]
+async fn jlink_reset_times_out_and_persists_timeout_evidence() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let artifacts_dir = tempdir.path().join("artifacts");
+    let script = make_fake_jlink(tempdir.path(), "sleep 1");
+    let policy_provider = JobPolicyProvider::new(|action| match action {
+        "jlink.reset" => ActionPolicy::new(
+            std::time::Duration::from_millis(150),
+            "teardown: stop the active adapter task and persist the final job state",
+        ),
+        _ => ActionPolicy::new(
+            std::time::Duration::from_secs(60),
+            "teardown: stop the active adapter task and persist the final job state",
+        ),
+    });
+    let mut config = jlink_test_config(script.display().to_string());
+    config.artifacts_dir = Some(artifacts_dir.display().to_string());
+    let app = spawn_app_with_config_and_job_policy(config, policy_provider).await;
+
+    let created: Job = app
+        .post_action("board-zeta", "jlink.reset", None)
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+
+    let failed = loop {
+        let response = app.get_job(&created.id).await;
+        let job: Job = response.json().await.expect("invalid job json");
+        if job.status == JobStatus::Failed {
+            break job;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    };
+    assert_eq!(failed.action, "jlink.reset");
+    assert_eq!(failed.timeout_secs, 0);
+
+    let events = wait_for_job_events(&app, &created.id, 5).await;
+    assert!(events.iter().any(|event| {
+        event.message.contains("timeout policy: 0s")
+            && event.message.contains("persist the final job state")
+    }));
+    assert!(events
+        .iter()
+        .any(|event| event.message.contains("action timed out after 0s")));
+    assert!(events.iter().any(|event| {
+        event.message == "teardown: stop the active adapter task and persist the final job state"
+    }));
+
+    let evidence: JobEvidence = app
+        .get_job_evidence(&created.id)
+        .await
+        .json()
+        .await
+        .expect("invalid evidence json");
+    assert!(evidence.summary.headline.contains("jlink.reset failed"));
+    assert_eq!(
+        evidence.summary.outcome.as_deref(),
+        Some("job failed: action timed out after 0s")
+    );
+    assert!(evidence
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.name == "job.json"));
+    assert!(evidence
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.name == "events.ndjson"));
+}
+
+#[tokio::test]
 async fn ssh_tail_streams_events_until_cancelled() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let script = make_fake_ssh(
