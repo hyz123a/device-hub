@@ -1,0 +1,7 @@
+profiles:
+  - id: brd4186c
+    label: BRD4186C
+    jlink:
+      device: EFR32MG24BXXXF1536
+      interface: SWD
+      speed_khz: 2700

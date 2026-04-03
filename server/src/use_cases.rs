@@ -1,26 +1,45 @@
-use device_hub_shared::{ActionRequest, Device, Job, JobStatus};
+use device_hub_shared::{
+    ActionRequest, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, Job, JobStatus,
+};
+use std::sync::Arc;
 
 use crate::{
     error::AppError,
-    ports::{DeviceRegistryError, DynDeviceRegistry},
+    ports::{DeviceRegistryError, DynDeviceRegistry, DynHostDiscovery, HostDiscoveryError},
     services::job_manager::JobManager,
     storage::job_store::JobStore,
 };
 
 #[derive(Clone)]
 pub struct AppUseCases {
+    board_profiles: Arc<Vec<BoardProfile>>,
     devices: DynDeviceRegistry,
+    host_discovery: DynHostDiscovery,
     jobs: JobStore,
     job_manager: JobManager,
 }
 
 impl AppUseCases {
-    pub fn new(devices: DynDeviceRegistry, jobs: JobStore, job_manager: JobManager) -> Self {
+    pub fn new(
+        board_profiles: Vec<BoardProfile>,
+        devices: DynDeviceRegistry,
+        host_discovery: DynHostDiscovery,
+        jobs: JobStore,
+        job_manager: JobManager,
+    ) -> Self {
         Self {
+            board_profiles: Arc::new(board_profiles),
             devices,
+            host_discovery,
             jobs,
             job_manager,
         }
+    }
+
+    pub fn list_board_profiles(&self) -> Vec<BoardProfile> {
+        let mut profiles = self.board_profiles.as_ref().clone();
+        profiles.sort_by(|left, right| left.id.cmp(&right.id));
+        profiles
     }
 
     pub fn list_devices(&self) -> Vec<Device> {
@@ -56,6 +75,26 @@ impl AppUseCases {
         self.devices
             .delete(device_id)
             .map_err(map_device_registry_error)
+    }
+
+    pub async fn list_serial_ports(&self) -> Result<Vec<DiscoveredSerialPort>, AppError> {
+        let mut ports = self
+            .host_discovery
+            .list_serial_ports()
+            .await
+            .map_err(map_host_discovery_error)?;
+        ports.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(ports)
+    }
+
+    pub async fn list_jlink_probes(&self) -> Result<Vec<DiscoveredJlinkProbe>, AppError> {
+        let mut probes = self
+            .host_discovery
+            .list_jlink_probes()
+            .await
+            .map_err(map_host_discovery_error)?;
+        probes.sort_by(|left, right| left.serial.cmp(&right.serial));
+        Ok(probes)
     }
 
     pub fn list_jobs(&self, device_id: Option<&str>) -> Vec<Job> {
@@ -106,6 +145,10 @@ fn map_device_registry_error(error: DeviceRegistryError) -> AppError {
         }
         DeviceRegistryError::Persistence(message) => AppError::Internal(message),
     }
+}
+
+fn map_host_discovery_error(error: HostDiscoveryError) -> AppError {
+    AppError::Internal(error.to_string())
 }
 
 fn ensure_device_has_no_active_jobs(jobs: &JobStore, device_id: &str) -> Result<(), AppError> {
@@ -212,12 +255,12 @@ fn validate_payload(action: &str, payload: Option<&ActionRequest>) -> Result<(),
         "ssh.exec" if value.is_none_or(|command| command.trim().is_empty()) => Err(
             AppError::BadRequest("action `ssh.exec` requires a command payload".into()),
         ),
-        "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(
-            AppError::BadRequest("action `ssh.tail` requires a log path payload".into()),
-        ),
-        "serial.write" if value.is_none_or(|input| input.is_empty()) => {
-            Err(AppError::BadRequest("action `serial.write` requires a payload".into()))
-        }
+        "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(AppError::BadRequest(
+            "action `ssh.tail` requires a log path payload".into(),
+        )),
+        "serial.write" if value.is_none_or(|input| input.is_empty()) => Err(AppError::BadRequest(
+            "action `serial.write` requires a payload".into(),
+        )),
         "jlink.flash" if value.is_none_or(|path| path.trim().is_empty()) => Err(
             AppError::BadRequest("action `jlink.flash` requires a firmware path payload".into()),
         ),

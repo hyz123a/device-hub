@@ -4,12 +4,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use device_hub_shared::SerialConfig;
+use device_hub_shared::{DiscoveredSerialPort, SerialConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf, split};
 use tokio::time::{Duration, timeout};
-use tokio_serial::SerialPortBuilderExt;
+use tokio_serial::{SerialPortBuilderExt, SerialPortType};
 
 const DEFAULT_READ_CHUNK_BYTES: usize = 1024;
 const DEFAULT_MAX_MESSAGE_BYTES: usize = 4096;
@@ -32,6 +32,8 @@ pub enum SerialAdapterError {
     },
     #[error("failed to read serial stream: {0}")]
     Io(#[from] std::io::Error),
+    #[error("failed to enumerate serial ports: {0}")]
+    Enumerate(#[source] tokio_serial::Error),
     #[error("serial port `{port}` is already in use by an active serial.tail job")]
     Busy { port: String },
 }
@@ -151,6 +153,18 @@ impl SerialAdapter {
         Ok(payload.len())
     }
 
+    pub fn discover_ports(&self) -> Result<Vec<DiscoveredSerialPort>, SerialAdapterError> {
+        let mut ports = tokio_serial::available_ports().map_err(SerialAdapterError::Enumerate)?;
+        ports.sort_by(|left, right| left.port_name.cmp(&right.port_name));
+        Ok(ports
+            .into_iter()
+            .map(|info| DiscoveredSerialPort {
+                path: info.port_name,
+                label: serial_port_label(&info.port_type),
+            })
+            .collect())
+    }
+
     fn lookup_shared_writer(&self, config: &SerialConfig) -> Option<Arc<SharedSerialWriter>> {
         let session_key = session_key(config);
         let mut sessions = self
@@ -247,6 +261,42 @@ impl SharedSerialWriter {
         writer.write_all(payload).await?;
         writer.flush().await?;
         Ok(())
+    }
+}
+
+fn serial_port_label(port_type: &SerialPortType) -> Option<String> {
+    match port_type {
+        SerialPortType::UsbPort(info) => {
+            let mut parts = Vec::new();
+            if let Some(manufacturer) = info
+                .manufacturer
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                parts.push(manufacturer.to_owned());
+            }
+            if let Some(product) = info
+                .product
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                parts.push(product.to_owned());
+            }
+            if let Some(serial_number) = info
+                .serial_number
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                parts.push(format!("SN {serial_number}"));
+            }
+            (!parts.is_empty()).then(|| parts.join(" · "))
+        }
+        SerialPortType::PciPort => Some("PCI serial port".into()),
+        SerialPortType::BluetoothPort => Some("Bluetooth serial port".into()),
+        SerialPortType::Unknown => None,
     }
 }
 

@@ -715,9 +715,11 @@ async fn jlink_reset_times_out_and_persists_timeout_evidence() {
         event.message.contains("timeout policy: 0s")
             && event.message.contains("persist the final job state")
     }));
-    assert!(events
-        .iter()
-        .any(|event| event.message.contains("action timed out after 0s")));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message.contains("action timed out after 0s"))
+    );
     assert!(events.iter().any(|event| {
         event.message == "teardown: stop the active adapter task and persist the final job state"
     }));
@@ -733,14 +735,18 @@ async fn jlink_reset_times_out_and_persists_timeout_evidence() {
         evidence.summary.outcome.as_deref(),
         Some("job failed: action timed out after 0s")
     );
-    assert!(evidence
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.name == "job.json"));
-    assert!(evidence
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.name == "events.ndjson"));
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "job.json")
+    );
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "events.ndjson")
+    );
 }
 
 #[tokio::test]

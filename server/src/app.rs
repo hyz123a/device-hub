@@ -9,12 +9,14 @@ use std::{path::PathBuf, sync::Arc};
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    api,
+    api, board_profiles,
     config::AppConfig,
     events::EventBus,
     frontend::{self, FrontendAssets},
+    ports::{DynHostDiscovery, HostDiscoveryPort},
     services::{
         adapter_action_runner::AdapterActionRunner,
+        adapter_host_discovery::AdapterHostDiscovery,
         job_manager::{JobManager, JobPolicyProvider},
     },
     storage::{
@@ -32,15 +34,34 @@ pub struct AppState {
 }
 
 pub async fn build_router(config: AppConfig) -> Router {
-    build_router_with_job_policy(config, JobPolicyProvider::default()).await
+    build_router_with_job_policy_and_board_profiles(
+        config,
+        JobPolicyProvider::default(),
+        Vec::new(),
+    )
+    .await
 }
 
 pub async fn build_router_with_job_policy(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
 ) -> Router {
-    build_router_with_job_policy_and_serial_adapter(config, policy_provider, SerialAdapter::new())
-        .await
+    build_router_with_job_policy_and_board_profiles(config, policy_provider, Vec::new()).await
+}
+
+pub async fn build_router_with_job_policy_and_board_profiles(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+    board_profiles: Vec<device_hub_shared::BoardProfile>,
+) -> Router {
+    build_router_with_components(
+        config,
+        policy_provider,
+        SerialAdapter::new(),
+        None,
+        board_profiles,
+    )
+    .await
 }
 
 pub async fn build_router_with_job_policy_and_serial_stream_opener(
@@ -57,13 +78,30 @@ pub async fn build_router_with_job_policy_and_serial_stream_opener(
     let serial_adapter = SerialAdapter::with_stream_opener(max_message_bytes, move |config| {
         opener(config).map_err(device_hub_adapter_serial::SerialAdapterError::Io)
     });
-    build_router_with_job_policy_and_serial_adapter(config, policy_provider, serial_adapter).await
+    build_router_with_components(config, policy_provider, serial_adapter, None, Vec::new()).await
 }
 
-async fn build_router_with_job_policy_and_serial_adapter(
+pub async fn build_router_with_job_policy_and_host_discovery(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+    host_discovery: impl HostDiscoveryPort + 'static,
+) -> Router {
+    build_router_with_components(
+        config,
+        policy_provider,
+        SerialAdapter::new(),
+        Some(Arc::new(host_discovery)),
+        Vec::new(),
+    )
+    .await
+}
+
+async fn build_router_with_components(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
     serial_adapter: SerialAdapter,
+    host_discovery: Option<DynHostDiscovery>,
+    board_profiles: Vec<device_hub_shared::BoardProfile>,
 ) -> Router {
     let AppConfig {
         devices: configured_devices,
@@ -87,6 +125,12 @@ async fn build_router_with_job_policy_and_serial_adapter(
         Some(program) => JlinkAdapter::with_program(program),
         None => JlinkAdapter::new(),
     };
+    let host_discovery = host_discovery.unwrap_or_else(|| {
+        Arc::new(AdapterHostDiscovery::new(
+            serial_adapter.clone(),
+            jlink_adapter.clone(),
+        ))
+    });
     let action_runner = Arc::new(AdapterActionRunner::new(
         ssh_adapter,
         jlink_adapter,
@@ -101,7 +145,13 @@ async fn build_router_with_job_policy_and_serial_adapter(
         action_runner,
         policy_provider,
     );
-    let use_cases = AppUseCases::new(devices.clone(), jobs.clone(), job_manager.clone());
+    let use_cases = AppUseCases::new(
+        board_profiles,
+        devices.clone(),
+        host_discovery,
+        jobs.clone(),
+        job_manager.clone(),
+    );
 
     let state = AppState {
         use_cases,
@@ -112,7 +162,10 @@ async fn build_router_with_job_policy_and_serial_adapter(
 
     let api_router = Router::new()
         .route("/", get(api::root))
+        .route("/board-profiles", get(api::list_board_profiles))
         .route("/devices", get(api::list_devices).post(api::create_device))
+        .route("/host/serial-ports", get(api::list_serial_ports))
+        .route("/host/jlink-probes", get(api::list_jlink_probes))
         .route(
             "/devices/{device_id}",
             get(api::get_device)
@@ -140,4 +193,8 @@ async fn build_router_with_job_policy_and_serial_adapter(
         .fallback(frontend::serve_embedded_asset)
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+pub fn load_default_board_profiles() -> Vec<device_hub_shared::BoardProfile> {
+    board_profiles::load("board-profiles.yaml").unwrap_or_default()
 }

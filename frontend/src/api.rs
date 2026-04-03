@@ -1,4 +1,7 @@
-use device_hub_shared::{ActionRequest, Device, DeviceDetail, Job, JobEvidence, LogEvent};
+use device_hub_shared::{
+    ActionRequest, BoardProfile, Device, DeviceDetail, DiscoveredJlinkProbe, DiscoveredSerialPort,
+    Job, JobEvidence, LogEvent,
+};
 use gloo_net::http::{Request, Response};
 use serde::Deserialize;
 
@@ -47,6 +50,30 @@ pub async fn update_device(device_id: &str, device: &Device) -> Result<Device, S
 
 pub async fn delete_device(device_id: &str) -> Result<Device, String> {
     let response = Request::delete(&format!("{API_PREFIX}/devices/{device_id}"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn list_serial_ports() -> Result<Vec<DiscoveredSerialPort>, String> {
+    let response = Request::get(&format!("{API_PREFIX}/host/serial-ports"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn list_board_profiles() -> Result<Vec<BoardProfile>, String> {
+    let response = Request::get(&format!("{API_PREFIX}/board-profiles"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn list_jlink_probes() -> Result<Vec<DiscoveredJlinkProbe>, String> {
+    let response = Request::get(&format!("{API_PREFIX}/host/jlink-probes"))
         .send()
         .await
         .map_err(|err| err.to_string())?;

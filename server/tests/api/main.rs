@@ -3,4 +3,5 @@ mod devices;
 mod frontend;
 mod helpers;
 mod jobs;
+mod profiles;
 mod root;

@@ -1,14 +1,20 @@
 use std::{path::PathBuf, time::Duration};
 
 use device_hub_server::{
-    app::{build_router_with_job_policy, build_router_with_job_policy_and_serial_stream_opener},
+    app::{
+        build_router_with_job_policy, build_router_with_job_policy_and_board_profiles,
+        build_router_with_job_policy_and_host_discovery,
+        build_router_with_job_policy_and_serial_stream_opener,
+    },
     config::AppConfig,
+    ports::{HostDiscoveryError, HostDiscoveryPort},
     services::job_manager::JobPolicyProvider,
 };
 use device_hub_shared::{
-    ActionRequest, Device, JlinkConfig, Job, JobStatus, LogEvent, SerialConfig, SshConfig,
+    ActionRequest, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig,
+    Job, JobStatus, LogEvent, SerialConfig, SshConfig,
 };
-use futures::StreamExt;
+use futures::{StreamExt, future::BoxFuture};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 pub struct TestApp {
@@ -122,6 +128,30 @@ impl TestApp {
             .expect("failed to execute request")
     }
 
+    pub async fn get_serial_ports(&self) -> reqwest::Response {
+        self.api_client
+            .get(self.endpoint("/api/host/serial-ports"))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
+    pub async fn get_jlink_probes(&self) -> reqwest::Response {
+        self.api_client
+            .get(self.endpoint("/api/host/jlink-probes"))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
+    pub async fn get_board_profiles(&self) -> reqwest::Response {
+        self.api_client
+            .get(self.endpoint("/api/board-profiles"))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
     pub async fn wait_for_job_status(&self, job_id: &str, status: JobStatus) -> Job {
         for _ in 0..20 {
             let response = self.get_job(job_id).await;
@@ -147,6 +177,70 @@ pub async fn spawn_app() -> TestApp {
 
 pub async fn spawn_app_with_config(config: AppConfig) -> TestApp {
     spawn_app_with_config_and_job_policy(config, JobPolicyProvider::default()).await
+}
+
+pub async fn spawn_app_with_config_and_host_discovery(
+    config: AppConfig,
+    host_discovery: StaticHostDiscovery,
+) -> TestApp {
+    let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
+    let app = build_router_with_job_policy_and_host_discovery(
+        config,
+        JobPolicyProvider::default(),
+        host_discovery,
+    )
+    .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind random port");
+    let port = listener
+        .local_addr()
+        .expect("failed to read local addr")
+        .port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("test server crashed");
+    });
+
+    TestApp {
+        address: format!("http://127.0.0.1:{port}"),
+        api_client: reqwest::Client::new(),
+        artifacts_dir,
+    }
+}
+
+pub async fn spawn_app_with_config_and_board_profiles(
+    config: AppConfig,
+    board_profiles: Vec<BoardProfile>,
+) -> TestApp {
+    let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
+    let app = build_router_with_job_policy_and_board_profiles(
+        config,
+        JobPolicyProvider::default(),
+        board_profiles,
+    )
+    .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind random port");
+    let port = listener
+        .local_addr()
+        .expect("failed to read local addr")
+        .port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("test server crashed");
+    });
+
+    TestApp {
+        address: format!("http://127.0.0.1:{port}"),
+        api_client: reqwest::Client::new(),
+        artifacts_dir,
+    }
 }
 
 pub async fn spawn_app_with_config_and_job_policy(
@@ -314,4 +408,26 @@ pub async fn recv_ws_event(stream: &mut TestWsStream) -> LogEvent {
     }
 
     panic!("websocket did not emit expected event");
+}
+
+#[derive(Clone, Default)]
+pub struct StaticHostDiscovery {
+    pub serial_ports: Vec<DiscoveredSerialPort>,
+    pub jlink_probes: Vec<DiscoveredJlinkProbe>,
+}
+
+impl HostDiscoveryPort for StaticHostDiscovery {
+    fn list_serial_ports(
+        &self,
+    ) -> BoxFuture<'static, Result<Vec<DiscoveredSerialPort>, HostDiscoveryError>> {
+        let serial_ports = self.serial_ports.clone();
+        Box::pin(async move { Ok(serial_ports) })
+    }
+
+    fn list_jlink_probes(
+        &self,
+    ) -> BoxFuture<'static, Result<Vec<DiscoveredJlinkProbe>, HostDiscoveryError>> {
+        let jlink_probes = self.jlink_probes.clone();
+        Box::pin(async move { Ok(jlink_probes) })
+    }
 }

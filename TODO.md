@@ -31,3 +31,6 @@
 - [x] Add server API endpoints and validation for creating, updating, and deleting devices with SSH, serial, and J-Link settings
 - [x] Add tests covering device CRUD, validation, and registry persistence across server restarts
 - [x] Add frontend device management flows for creating, editing, and removing devices
+- [x] Add adapter support and stable server seams for serial port enumeration and J-Link probe scanning                                   
+- [x] Add device page selectors that let operators choose a scanned serial path or J-Link probe while still allowing manual entry           
+- [x] Add tests covering discovery API responses and device-page scan-driven selection flows

@@ -1,10 +1,11 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use device_hub_shared::JlinkConfig;
+use device_hub_shared::{DiscoveredJlinkProbe, JlinkConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{fs, process::Command};
@@ -114,6 +115,11 @@ impl JlinkAdapter {
             },
             artifacts: output.artifacts,
         })
+    }
+
+    pub async fn scan_probes(&self) -> Result<Vec<DiscoveredJlinkProbe>, JlinkAdapterError> {
+        let output = self.run_scan_script(&["ShowEmuList", "exit"]).await?;
+        Ok(parse_scanned_probes(&output.stdout))
     }
 
     pub async fn flash(
@@ -239,7 +245,49 @@ impl JlinkAdapter {
             });
         }
 
-        Ok(CompletedExecution { artifacts })
+        Ok(CompletedExecution { stdout, artifacts })
+    }
+
+    async fn run_scan_script(
+        &self,
+        commands: &[&str],
+    ) -> Result<CompletedExecution, JlinkAdapterError> {
+        let script_path = temp_script_path();
+        let command_script = format!("{}\n", commands.join("\n"));
+        fs::write(&script_path, &command_script).await?;
+
+        let output = Command::new(&self.program)
+            .kill_on_drop(true)
+            .arg("-NoGui")
+            .arg("1")
+            .arg("-AutoConnect")
+            .arg("0")
+            .arg("-CommandFile")
+            .arg(&script_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|source| JlinkAdapterError::Spawn {
+                program: self.program.display().to_string(),
+                source,
+            })?;
+
+        let _ = fs::remove_file(&script_path).await;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let artifacts = build_artifacts(&command_script, &stdout, &stderr);
+        if !output.status.success() {
+            return Err(JlinkAdapterError::CommandFailed {
+                exit_code: output.status.code().unwrap_or(-1),
+                stdout,
+                stderr: stderr.trim().to_owned(),
+                artifacts,
+            });
+        }
+
+        Ok(CompletedExecution { stdout, artifacts })
     }
 }
 
@@ -254,7 +302,60 @@ impl JlinkAdapterError {
 
 #[derive(Clone, Debug)]
 struct CompletedExecution {
+    stdout: String,
     artifacts: Vec<JlinkArtifact>,
+}
+
+fn parse_scanned_probes(stdout: &str) -> Vec<DiscoveredJlinkProbe> {
+    let mut seen = HashSet::new();
+    let mut probes = Vec::new();
+
+    for line in stdout.lines() {
+        let Some(serial) = extract_scan_field(line, &["Serial number", "Serial Number", "SN"])
+        else {
+            continue;
+        };
+        if !seen.insert(serial.clone()) {
+            continue;
+        }
+        probes.push(DiscoveredJlinkProbe {
+            serial,
+            product: extract_scan_field(line, &["ProductName", "Product"]),
+        });
+    }
+
+    probes.sort_by(|left, right| left.serial.cmp(&right.serial));
+    probes
+}
+
+fn extract_scan_field(line: &str, labels: &[&str]) -> Option<String> {
+    for label in labels {
+        for delimiter in [":", "="] {
+            let marker = format!("{label}{delimiter}");
+            let Some((_, value)) = line.split_once(&marker) else {
+                continue;
+            };
+            let value = value.split([',', ';']).next().unwrap_or_default().trim();
+            if value.is_empty() {
+                continue;
+            }
+            let normalized = if *label == "SN" || label.starts_with("Serial") {
+                value
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            } else {
+                value.to_owned()
+            };
+            if !normalized.is_empty() {
+                return Some(normalized);
+            }
+        }
+    }
+
+    None
 }
 
 fn normalize_firmware_path(path: &str) -> PathBuf {
@@ -390,5 +491,26 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_scanned_probe_output() {
+        let probes = parse_scanned_probes(
+            "J-Link[0]: ProductName: J-Link EDU Mini, Serial number: 123456789\nJ-Link[1]: SN: 987654321, ProductName: J-Link PLUS\n",
+        );
+
+        assert_eq!(
+            probes,
+            vec![
+                DiscoveredJlinkProbe {
+                    serial: "123456789".into(),
+                    product: Some("J-Link EDU Mini".into()),
+                },
+                DiscoveredJlinkProbe {
+                    serial: "987654321".into(),
+                    product: Some("J-Link PLUS".into()),
+                },
+            ]
+        );
     }
 }

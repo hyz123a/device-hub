@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 use crate::{app::AppState, error::AppError};
 use device_hub_shared::{
-    ActionRequest, EventFilter, Job, JobEvidence, JobStatus, JobSummary, LogChannel, LogEvent,
-    LogLevel, LogSource,
+    ActionRequest, BoardProfile, DiscoveredJlinkProbe, DiscoveredSerialPort, EventFilter, Job,
+    JobEvidence, JobStatus, JobSummary, LogChannel, LogEvent, LogLevel, LogSource,
 };
 
 pub async fn root() -> Json<serde_json::Value> {
@@ -30,6 +30,24 @@ pub async fn create_device(
 ) -> Result<Json<device_hub_shared::Device>, AppError> {
     let device = state.use_cases.create_device(device)?;
     Ok(Json(device))
+}
+
+pub async fn list_board_profiles(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<BoardProfile>>, AppError> {
+    Ok(Json(state.use_cases.list_board_profiles()))
+}
+
+pub async fn list_serial_ports(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<DiscoveredSerialPort>>, AppError> {
+    Ok(Json(state.use_cases.list_serial_ports().await?))
+}
+
+pub async fn list_jlink_probes(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<DiscoveredJlinkProbe>>, AppError> {
+    Ok(Json(state.use_cases.list_jlink_probes().await?))
 }
 
 #[derive(Debug, Deserialize, Default)]
