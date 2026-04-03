@@ -1,7 +1,7 @@
 use axum::{
-    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
+    Json,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -16,6 +16,8 @@ pub enum AppError {
     BadRequest(String),
     #[error("device_locked")]
     DeviceLocked { held_by_job_id: String },
+    #[error("conflict: {0}")]
+    Conflict(String),
     #[error("conflict: job is already {0}")]
     JobNotCancellable(String),
     #[error("internal server error: {0}")]
@@ -34,7 +36,9 @@ impl IntoResponse for AppError {
         let status = match &self {
             Self::DeviceNotFound | Self::JobNotFound => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::DeviceLocked { .. } | Self::JobNotCancellable(_) => StatusCode::CONFLICT,
+            Self::DeviceLocked { .. } | Self::Conflict(_) | Self::JobNotCancellable(_) => {
+                StatusCode::CONFLICT
+            }
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

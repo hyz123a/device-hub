@@ -24,6 +24,14 @@ pub async fn list_devices(State(state): State<AppState>) -> Json<Vec<device_hub_
     Json(state.use_cases.list_devices())
 }
 
+pub async fn create_device(
+    State(state): State<AppState>,
+    Json(device): Json<device_hub_shared::Device>,
+) -> Result<Json<device_hub_shared::Device>, AppError> {
+    let device = state.use_cases.create_device(device)?;
+    Ok(Json(device))
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct ListJobsQuery {
     pub device_id: Option<String>,
@@ -42,6 +50,23 @@ pub async fn get_device(
 ) -> Result<Json<device_hub_shared::DeviceDetail>, AppError> {
     let device = state.use_cases.get_device(&device_id)?;
     Ok(Json(device.detail()))
+}
+
+pub async fn update_device(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+    Json(device): Json<device_hub_shared::Device>,
+) -> Result<Json<device_hub_shared::Device>, AppError> {
+    let device = state.use_cases.update_device(&device_id, device)?;
+    Ok(Json(device))
+}
+
+pub async fn delete_device(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+) -> Result<Json<device_hub_shared::Device>, AppError> {
+    let device = state.use_cases.delete_device(&device_id)?;
+    Ok(Json(device))
 }
 
 pub async fn start_action(

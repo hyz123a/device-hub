@@ -25,6 +25,34 @@ pub async fn get_device(device_id: &str) -> Result<DeviceDetail, String> {
     decode_json(response).await
 }
 
+pub async fn create_device(device: &Device) -> Result<Device, String> {
+    let response = Request::post(&format!("{API_PREFIX}/devices"))
+        .json(device)
+        .map_err(|err| err.to_string())?
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn update_device(device_id: &str, device: &Device) -> Result<Device, String> {
+    let response = Request::put(&format!("{API_PREFIX}/devices/{device_id}"))
+        .json(device)
+        .map_err(|err| err.to_string())?
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn delete_device(device_id: &str) -> Result<Device, String> {
+    let response = Request::delete(&format!("{API_PREFIX}/devices/{device_id}"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
 pub async fn get_job_evidence(job_id: &str) -> Result<JobEvidence, String> {
     let response = Request::get(&format!("{API_PREFIX}/jobs/{job_id}/evidence"))
         .send()

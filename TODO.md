@@ -16,7 +16,7 @@
 
 ## Next
 - [x] Refactor `server` toward a real hexagonal architecture by introducing explicit ports/use cases and removing direct core dependencies on concrete adapters
-- [ ] Add artifact export/download flow for completed jobs
+- [x] Add artifact export/download flow for completed jobs
 - [x] Add `serial` support to the shared schema, device detail page, and server action routing so `serial.tail` becomes a first-class job like `ssh.tail`
 - [x] Implement a `device-hub-adapter-serial` crate with bounded log streaming, cancellation support, and unified `LogEvent` emission
 - [x] Add `serial.write` job support and a basic UI flow so operators can send serial input, control characters, and newline-terminated commands through Device Hub
@@ -27,3 +27,7 @@
 - [x] Add an API/UI flow to rerun a previous job with the same device, action, and arguments to tighten the harness-debug loop
 - [x] Add server and integration tests covering serial streaming, J-Link job lifecycle, timeout handling, and artifact persistence
 - [x] Embed `frontend/dist` into `server` for single-binary local distribution
+- [x] Add a persistent device registry port and storage backend so devices can be managed without editing config files
+- [x] Add server API endpoints and validation for creating, updating, and deleting devices with SSH, serial, and J-Link settings
+- [x] Add tests covering device CRUD, validation, and registry persistence across server restarts
+- [x] Add frontend device management flows for creating, editing, and removing devices

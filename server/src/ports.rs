@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use device_hub_shared::{ActionRequest, Device, Job};
 use futures::future::BoxFuture;
+use thiserror::Error;
 
 use crate::{
     events::EventBus,
@@ -37,3 +38,23 @@ pub trait ActionRunner: Send + Sync {
 }
 
 pub type DynActionRunner = Arc<dyn ActionRunner>;
+
+#[derive(Debug, Error)]
+pub enum DeviceRegistryError {
+    #[error("device not found")]
+    NotFound,
+    #[error("device `{0}` already exists")]
+    AlreadyExists(String),
+    #[error("device registry persistence failed: {0}")]
+    Persistence(String),
+}
+
+pub trait DeviceRegistryPort: Send + Sync {
+    fn list(&self) -> Vec<Device>;
+    fn get(&self, id: &str) -> Option<Device>;
+    fn create(&self, device: Device) -> Result<Device, DeviceRegistryError>;
+    fn update(&self, device: Device) -> Result<Device, DeviceRegistryError>;
+    fn delete(&self, id: &str) -> Result<Device, DeviceRegistryError>;
+}
+
+pub type DynDeviceRegistry = Arc<dyn DeviceRegistryPort>;
