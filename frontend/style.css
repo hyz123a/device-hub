@@ -907,6 +907,10 @@ a {
   background-color: rgb(255 255 255 / 0.05);
 }
 
+.bg-white\/50 {
+  background-color: rgb(255 255 255 / 0.5);
+}
+
 .bg-white\/55 {
   background-color: rgb(255 255 255 / 0.55);
 }
@@ -972,6 +976,11 @@ a {
 .py-1\.5 {
   padding-top: 0.375rem;
   padding-bottom: 0.375rem;
+}
+
+.py-2 {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
 }
 
 .py-2\.5 {

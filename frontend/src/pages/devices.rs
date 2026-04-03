@@ -1,10 +1,13 @@
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 use yew_router::prelude::Link;
 
 use crate::{api, app::Route};
-use device_hub_shared::{Device, JlinkConfig, SerialConfig, SshConfig};
+use device_hub_shared::{
+    BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig, SerialConfig,
+    SshConfig,
+};
 
 #[derive(Clone, PartialEq)]
 struct DeviceDraft {
@@ -18,6 +21,7 @@ struct DeviceDraft {
     serial_port: String,
     serial_baud: String,
     jlink_enabled: bool,
+    selected_jlink_board_profile_id: Option<String>,
     jlink_serial: String,
     jlink_device: String,
     jlink_interface: String,
@@ -38,6 +42,7 @@ impl Default for DeviceDraft {
             serial_port: String::new(),
             serial_baud: "115200".into(),
             jlink_enabled: false,
+            selected_jlink_board_profile_id: None,
             jlink_serial: String::new(),
             jlink_device: String::new(),
             jlink_interface: "SWD".into(),
@@ -155,6 +160,32 @@ impl DeviceDraft {
             jlink,
         })
     }
+
+    fn select_serial_port(&mut self, path: String) {
+        self.serial_port = path;
+    }
+
+    fn select_jlink_probe(&mut self, serial: String) {
+        self.jlink_serial = serial;
+    }
+
+    fn apply_jlink_board_profile(&mut self, profile: &BoardProfile) {
+        self.selected_jlink_board_profile_id = Some(profile.id.clone());
+        self.jlink_device = profile.jlink.device.clone();
+        self.jlink_interface = profile.jlink.interface.clone();
+        self.jlink_speed_khz = profile.jlink.speed_khz.to_string();
+    }
+
+    fn clear_jlink_board_profile_selection(&mut self) {
+        self.selected_jlink_board_profile_id = None;
+        self.jlink_device.clear();
+        self.jlink_interface = "SWD".into();
+        self.jlink_speed_khz = "4000".into();
+    }
+
+    fn mark_jlink_fields_as_manual(&mut self) {
+        self.selected_jlink_board_profile_id = None;
+    }
 }
 
 #[function_component(DevicesPage)]
@@ -166,14 +197,61 @@ pub fn devices_page() -> Html {
     let draft = use_state(DeviceDraft::default);
     let editing_device_id = use_state(|| Option::<String>::None);
     let submitting = use_state(|| false);
+    let board_profiles = use_state(|| Option::<Vec<BoardProfile>>::None);
+    let board_profiles_error = use_state(|| Option::<String>::None);
+    let board_profiles_loading = use_state(|| false);
+    let serial_ports = use_state(|| Option::<Vec<DiscoveredSerialPort>>::None);
+    let serial_scan_error = use_state(|| Option::<String>::None);
+    let serial_scan_loading = use_state(|| false);
+    let jlink_probes = use_state(|| Option::<Vec<DiscoveredJlinkProbe>>::None);
+    let jlink_scan_error = use_state(|| Option::<String>::None);
+    let jlink_scan_loading = use_state(|| false);
 
     {
         let devices = devices.clone();
         let page_error = page_error.clone();
+        let board_profiles = board_profiles.clone();
+        let board_profiles_error = board_profiles_error.clone();
+        let board_profiles_loading = board_profiles_loading.clone();
+        let serial_ports = serial_ports.clone();
+        let serial_scan_error = serial_scan_error.clone();
+        let serial_scan_loading = serial_scan_loading.clone();
+        let jlink_probes = jlink_probes.clone();
+        let jlink_scan_error = jlink_scan_error.clone();
+        let jlink_scan_loading = jlink_scan_loading.clone();
         use_effect_with((), move |_| {
             refresh_devices(devices.clone(), page_error.clone());
+            refresh_board_profiles(
+                board_profiles.clone(),
+                board_profiles_error.clone(),
+                board_profiles_loading.clone(),
+            );
+            refresh_serial_ports(
+                serial_ports.clone(),
+                serial_scan_error.clone(),
+                serial_scan_loading.clone(),
+            );
+            refresh_jlink_probes(
+                jlink_probes.clone(),
+                jlink_scan_error.clone(),
+                jlink_scan_loading.clone(),
+            );
             || {}
         });
+    }
+
+    {
+        let draft = draft.clone();
+        let jlink_probes = (*jlink_probes).clone();
+        use_effect_with(
+            (jlink_probes, (*draft).jlink_serial.clone()),
+            move |(probes, serial)| {
+                if let Some(autofill_serial) = autofill_jlink_serial(probes.as_deref(), serial) {
+                    update_draft(&draft, move |next| next.select_jlink_probe(autofill_serial));
+                }
+                || {}
+            },
+        );
     }
 
     let on_id_input = {
@@ -239,6 +317,28 @@ pub fn devices_page() -> Html {
             update_draft(&draft, move |next| next.serial_baud = value);
         })
     };
+    let on_serial_scan_select = {
+        let draft = draft.clone();
+        Callback::from(move |event: Event| {
+            let value = event.target_unchecked_into::<HtmlSelectElement>().value();
+            if value.is_empty() {
+                return;
+            }
+            update_draft(&draft, move |next| next.select_serial_port(value));
+        })
+    };
+    let on_refresh_serial_scan = {
+        let serial_ports = serial_ports.clone();
+        let serial_scan_error = serial_scan_error.clone();
+        let serial_scan_loading = serial_scan_loading.clone();
+        Callback::from(move |_| {
+            refresh_serial_ports(
+                serial_ports.clone(),
+                serial_scan_error.clone(),
+                serial_scan_loading.clone(),
+            );
+        })
+    };
     let on_jlink_enabled = {
         let draft = draft.clone();
         Callback::from(move |event: Event| {
@@ -257,21 +357,30 @@ pub fn devices_page() -> Html {
         let draft = draft.clone();
         Callback::from(move |event: InputEvent| {
             let value = event.target_unchecked_into::<HtmlInputElement>().value();
-            update_draft(&draft, move |next| next.jlink_device = value);
+            update_draft(&draft, move |next| {
+                next.mark_jlink_fields_as_manual();
+                next.jlink_device = value;
+            });
         })
     };
     let on_jlink_interface_input = {
         let draft = draft.clone();
         Callback::from(move |event: InputEvent| {
             let value = event.target_unchecked_into::<HtmlInputElement>().value();
-            update_draft(&draft, move |next| next.jlink_interface = value);
+            update_draft(&draft, move |next| {
+                next.mark_jlink_fields_as_manual();
+                next.jlink_interface = value;
+            });
         })
     };
     let on_jlink_speed_input = {
         let draft = draft.clone();
         Callback::from(move |event: InputEvent| {
             let value = event.target_unchecked_into::<HtmlInputElement>().value();
-            update_draft(&draft, move |next| next.jlink_speed_khz = value);
+            update_draft(&draft, move |next| {
+                next.mark_jlink_fields_as_manual();
+                next.jlink_speed_khz = value;
+            });
         })
     };
     let on_jlink_autoconnect = {
@@ -279,6 +388,44 @@ pub fn devices_page() -> Html {
         Callback::from(move |event: Event| {
             let checked = event.target_unchecked_into::<HtmlInputElement>().checked();
             update_draft(&draft, move |next| next.jlink_autoconnect = checked);
+        })
+    };
+    let on_jlink_scan_select = {
+        let draft = draft.clone();
+        Callback::from(move |event: Event| {
+            let value = event.target_unchecked_into::<HtmlSelectElement>().value();
+            if value.is_empty() {
+                return;
+            }
+            update_draft(&draft, move |next| next.select_jlink_probe(value));
+        })
+    };
+    let on_jlink_board_profile_select = {
+        let draft = draft.clone();
+        let board_profiles = board_profiles.clone();
+        Callback::from(move |event: Event| {
+            let value = event.target_unchecked_into::<HtmlSelectElement>().value();
+            if value.is_empty() {
+                update_draft(&draft, |next| next.clear_jlink_board_profile_selection());
+                return;
+            }
+            let Some(profile) = lookup_jlink_board_profile((*board_profiles).as_deref(), &value)
+            else {
+                return;
+            };
+            update_draft(&draft, move |next| next.apply_jlink_board_profile(profile));
+        })
+    };
+    let on_refresh_jlink_scan = {
+        let jlink_probes = jlink_probes.clone();
+        let jlink_scan_error = jlink_scan_error.clone();
+        let jlink_scan_loading = jlink_scan_loading.clone();
+        Callback::from(move |_| {
+            refresh_jlink_probes(
+                jlink_probes.clone(),
+                jlink_scan_error.clone(),
+                jlink_scan_loading.clone(),
+            );
         })
     };
 
@@ -355,6 +502,14 @@ pub fn devices_page() -> Html {
     let draft_value = (*draft).clone();
     let is_editing = (*editing_device_id).is_some();
     let is_submitting = *submitting;
+    let selected_serial_scan =
+        selected_serial_scan_value(&draft_value.serial_port, (*serial_ports).as_deref());
+    let selected_jlink_scan =
+        selected_jlink_scan_value(&draft_value.jlink_serial, (*jlink_probes).as_deref());
+    let selected_jlink_board_profile = draft_value
+        .selected_jlink_board_profile_id
+        .clone()
+        .unwrap_or_default();
 
     html! {
         <section class="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
@@ -577,9 +732,49 @@ pub fn devices_page() -> Html {
                         {
                             if draft_value.serial_enabled {
                                 html! {
-                                    <div class="grid gap-3 sm:grid-cols-2">
-                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.serial_port.clone()} oninput={on_serial_port_input} disabled={is_submitting} placeholder="/dev/ttyUSB0" />
-                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.serial_baud.clone()} oninput={on_serial_baud_input} disabled={is_submitting} placeholder="115200" />
+                                    <div class="grid gap-3">
+                                        <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/10 bg-white/50 px-4 py-3 text-sm text-ink-muted">
+                                            <span>{"Scan this host for serial character devices, then keep editing the path manually if needed."}</span>
+                                            <button
+                                                class="rounded-2xl border border-black/10 bg-white/75 px-4 py-2 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                onclick={on_refresh_serial_scan.clone()}
+                                                disabled={is_submitting || *serial_scan_loading}
+                                            >
+                                                {if *serial_scan_loading { "Scanning serial..." } else { "Scan serial ports" }}
+                                            </button>
+                                        </div>
+                                        {
+                                            if let Some(message) = (*serial_scan_error).clone() {
+                                                html! { <p class="m-0 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{message}</p> }
+                                            } else if let Some(ports) = (*serial_ports).clone() {
+                                                if ports.is_empty() {
+                                                    html! { <p class="m-0 text-sm text-ink-muted">{"No serial devices were detected on this host. You can still type the path manually."}</p> }
+                                                } else {
+                                                    html! {
+                                                        <label class="grid gap-2 text-sm text-ink-muted">
+                                                            <span>{"Scanned serial paths"}</span>
+                                                            <select
+                                                                class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                                                onchange={on_serial_scan_select}
+                                                                disabled={is_submitting}
+                                                                value={selected_serial_scan.clone()}
+                                                            >
+                                                                <option value="">{"Keep manual entry"}</option>
+                                                                { for ports.iter().map(|port| html! {
+                                                                    <option value={port.path.clone()}>{format_serial_port_option(port)}</option>
+                                                                }) }
+                                                            </select>
+                                                        </label>
+                                                    }
+                                                }
+                                            } else {
+                                                Html::default()
+                                            }
+                                        }
+                                        <div class="grid gap-3 sm:grid-cols-2">
+                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.serial_port.clone()} oninput={on_serial_port_input} disabled={is_submitting} placeholder="/dev/ttyUSB0" />
+                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.serial_baud.clone()} oninput={on_serial_baud_input} disabled={is_submitting} placeholder="115200" />
+                                        </div>
                                     </div>
                                 }
                             } else {
@@ -597,6 +792,70 @@ pub fn devices_page() -> Html {
                             if draft_value.jlink_enabled {
                                 html! {
                                     <div class="grid gap-3">
+                                        <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/10 bg-white/50 px-4 py-3 text-sm text-ink-muted">
+                                            <span>{"Scan the host for attached probes, then keep the serial field editable for manual overrides."}</span>
+                                            <button
+                                                class="rounded-2xl border border-black/10 bg-white/75 px-4 py-2 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                onclick={on_refresh_jlink_scan.clone()}
+                                                disabled={is_submitting || *jlink_scan_loading}
+                                            >
+                                                {if *jlink_scan_loading { "Scanning probes..." } else { "Scan J-Link probes" }}
+                                            </button>
+                                        </div>
+                                        {
+                                            if let Some(message) = (*jlink_scan_error).clone() {
+                                                html! { <p class="m-0 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{message}</p> }
+                                            } else if let Some(probes) = (*jlink_probes).clone() {
+                                                if probes.is_empty() {
+                                                    html! { <p class="m-0 text-sm text-ink-muted">{"No J-Link probes were detected on this host. You can still type the probe serial manually."}</p> }
+                                                } else {
+                                                    html! {
+                                                        <label class="grid gap-2 text-sm text-ink-muted">
+                                                            <span>{"Detected probes"}</span>
+                                                            <select
+                                                                class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                                                onchange={on_jlink_scan_select}
+                                                                disabled={is_submitting}
+                                                                value={selected_jlink_scan.clone()}
+                                                            >
+                                                                <option value="">{"Keep manual entry"}</option>
+                                                                { for probes.iter().map(|probe| html! {
+                                                                    <option value={probe.serial.clone()}>{format_jlink_probe_option(probe)}</option>
+                                                                }) }
+                                                            </select>
+                                                        </label>
+                                                    }
+                                                }
+                                            } else {
+                                                Html::default()
+                                            }
+                                        }
+                                        {
+                                            if let Some(message) = (*board_profiles_error).clone() {
+                                                html! { <p class="m-0 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{message}</p> }
+                                            } else if let Some(profiles) = (*board_profiles).clone() {
+                                                html! {
+                                                    <label class="grid gap-2 text-sm text-ink-muted">
+                                                        <span>{"Board profile"}</span>
+                                                        <select
+                                                            class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                                            onchange={on_jlink_board_profile_select}
+                                                            disabled={is_submitting}
+                                                            value={selected_jlink_board_profile.clone()}
+                                                        >
+                                                            <option value="">{"Custom / manual"}</option>
+                                                            { for profiles.iter().map(|profile| html! {
+                                                                <option value={profile.id.clone()}>{format_jlink_board_profile_option(profile)}</option>
+                                                            }) }
+                                                        </select>
+                                                    </label>
+                                                }
+                                            } else if *board_profiles_loading {
+                                                html! { <p class="m-0 text-sm text-ink-muted">{"Loading board profiles..."}</p> }
+                                            } else {
+                                                Html::default()
+                                            }
+                                        }
                                         <div class="grid gap-3 sm:grid-cols-2">
                                             <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.jlink_serial.clone()} oninput={on_jlink_serial_input} disabled={is_submitting} placeholder="123456789" />
                                             <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.jlink_device.clone()} oninput={on_jlink_device_input} disabled={is_submitting} placeholder="STM32H743" />
@@ -651,7 +910,10 @@ fn update_draft(draft: &UseStateHandle<DeviceDraft>, update: impl FnOnce(&mut De
     draft.set(next);
 }
 
-fn refresh_devices(devices: UseStateHandle<Option<Vec<Device>>>, page_error: UseStateHandle<Option<String>>) {
+fn refresh_devices(
+    devices: UseStateHandle<Option<Vec<Device>>>,
+    page_error: UseStateHandle<Option<String>>,
+) {
     spawn_local(async move {
         match api::list_devices().await {
             Ok(list) => {
@@ -663,6 +925,123 @@ fn refresh_devices(devices: UseStateHandle<Option<Vec<Device>>>, page_error: Use
     });
 }
 
+fn refresh_serial_ports(
+    serial_ports: UseStateHandle<Option<Vec<DiscoveredSerialPort>>>,
+    serial_scan_error: UseStateHandle<Option<String>>,
+    serial_scan_loading: UseStateHandle<bool>,
+) {
+    serial_scan_loading.set(true);
+    spawn_local(async move {
+        match api::list_serial_ports().await {
+            Ok(ports) => {
+                serial_ports.set(Some(ports));
+                serial_scan_error.set(None);
+            }
+            Err(message) => serial_scan_error.set(Some(message)),
+        }
+        serial_scan_loading.set(false);
+    });
+}
+
+fn refresh_board_profiles(
+    board_profiles: UseStateHandle<Option<Vec<BoardProfile>>>,
+    board_profiles_error: UseStateHandle<Option<String>>,
+    board_profiles_loading: UseStateHandle<bool>,
+) {
+    board_profiles_loading.set(true);
+    spawn_local(async move {
+        match api::list_board_profiles().await {
+            Ok(profiles) => {
+                board_profiles.set(Some(profiles));
+                board_profiles_error.set(None);
+            }
+            Err(message) => board_profiles_error.set(Some(message)),
+        }
+        board_profiles_loading.set(false);
+    });
+}
+
+fn refresh_jlink_probes(
+    jlink_probes: UseStateHandle<Option<Vec<DiscoveredJlinkProbe>>>,
+    jlink_scan_error: UseStateHandle<Option<String>>,
+    jlink_scan_loading: UseStateHandle<bool>,
+) {
+    jlink_scan_loading.set(true);
+    spawn_local(async move {
+        match api::list_jlink_probes().await {
+            Ok(probes) => {
+                jlink_probes.set(Some(probes));
+                jlink_scan_error.set(None);
+            }
+            Err(message) => jlink_scan_error.set(Some(message)),
+        }
+        jlink_scan_loading.set(false);
+    });
+}
+
+fn selected_serial_scan_value(current: &str, ports: Option<&[DiscoveredSerialPort]>) -> String {
+    ports
+        .is_some_and(|ports| ports.iter().any(|port| port.path == current))
+        .then(|| current.to_owned())
+        .unwrap_or_default()
+}
+
+fn selected_jlink_scan_value(current: &str, probes: Option<&[DiscoveredJlinkProbe]>) -> String {
+    probes
+        .is_some_and(|probes| probes.iter().any(|probe| probe.serial == current))
+        .then(|| current.to_owned())
+        .unwrap_or_default()
+}
+
+fn lookup_jlink_board_profile<'a>(
+    profiles: Option<&'a [BoardProfile]>,
+    profile_id: &str,
+) -> Option<&'a BoardProfile> {
+    profiles?.iter().find(|profile| profile.id == profile_id)
+}
+
+fn format_serial_port_option(port: &DiscoveredSerialPort) -> String {
+    port.label
+        .as_ref()
+        .map(|label| format!("{} ({label})", port.path))
+        .unwrap_or_else(|| port.path.clone())
+}
+
+fn format_jlink_board_profile_option(profile: &BoardProfile) -> String {
+    format!(
+        "{} ({} / {} / {} kHz)",
+        profile.label, profile.jlink.device, profile.jlink.interface, profile.jlink.speed_khz
+    )
+}
+
+fn format_jlink_probe_option(probe: &DiscoveredJlinkProbe) -> String {
+    probe
+        .product
+        .as_ref()
+        .map(|product| format!("{} ({product})", probe.serial))
+        .unwrap_or_else(|| probe.serial.clone())
+}
+
+fn autofill_jlink_serial(
+    probes: Option<&[DiscoveredJlinkProbe]>,
+    current_serial: &str,
+) -> Option<String> {
+    if !current_serial.trim().is_empty() {
+        return None;
+    }
+
+    let mut valid_probes = probes?
+        .iter()
+        .filter(|probe| is_valid_jlink_serial(&probe.serial));
+    let probe = valid_probes.next()?;
+    valid_probes.next().is_none().then(|| probe.serial.clone())
+}
+
+fn is_valid_jlink_serial(serial: &str) -> bool {
+    let serial = serial.trim();
+    !serial.is_empty() && serial != "-1"
+}
+
 fn confirm_delete(device_id: &str) -> bool {
     web_sys::window()
         .and_then(|window| {
@@ -671,4 +1050,165 @@ fn confirm_delete(device_id: &str) -> bool {
                 .ok()
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn serial_ready_draft() -> DeviceDraft {
+        DeviceDraft {
+            id: "board-gamma".into(),
+            label: "Bench UART".into(),
+            serial_enabled: true,
+            serial_baud: "115200".into(),
+            ..DeviceDraft::default()
+        }
+    }
+
+    fn jlink_ready_draft() -> DeviceDraft {
+        DeviceDraft {
+            id: "board-zeta".into(),
+            label: "Probe Target".into(),
+            jlink_enabled: true,
+            jlink_device: "STM32H743".into(),
+            jlink_interface: "SWD".into(),
+            jlink_speed_khz: "4000".into(),
+            ..DeviceDraft::default()
+        }
+    }
+
+    fn sample_board_profile() -> BoardProfile {
+        BoardProfile {
+            id: "brd4186c".into(),
+            label: "BRD4186C".into(),
+            jlink: device_hub_shared::JlinkBoardProfile {
+                device: "EFR32MG24BXXXF1536".into(),
+                interface: "SWD".into(),
+                speed_khz: 2700,
+            },
+        }
+    }
+
+    #[test]
+    fn serial_scan_selection_can_be_overridden_manually() {
+        let mut draft = serial_ready_draft();
+
+        draft.select_serial_port("/dev/ttyUSB3".into());
+        let scanned = draft.to_device().expect("serial device from scan");
+        assert_eq!(
+            scanned.serial.expect("serial config from scan").port,
+            "/dev/ttyUSB3"
+        );
+
+        draft.serial_port = "/tmp/manual-uart".into();
+        let manual = draft
+            .to_device()
+            .expect("serial device from manual override");
+        assert_eq!(
+            manual
+                .serial
+                .expect("serial config from manual override")
+                .port,
+            "/tmp/manual-uart"
+        );
+    }
+
+    #[test]
+    fn jlink_scan_selection_can_be_overridden_manually() {
+        let mut draft = jlink_ready_draft();
+
+        draft.select_jlink_probe("123456789".into());
+        let scanned = draft.to_device().expect("jlink device from scan");
+        assert_eq!(
+            scanned.jlink.expect("jlink config from scan").serial,
+            "123456789"
+        );
+
+        draft.jlink_serial = "000111222".into();
+        let manual = draft
+            .to_device()
+            .expect("jlink device from manual override");
+        assert_eq!(
+            manual
+                .jlink
+                .expect("jlink config from manual override")
+                .serial,
+            "000111222"
+        );
+    }
+
+    #[test]
+    fn autofills_single_valid_jlink_probe_when_serial_is_empty() {
+        let serial = autofill_jlink_serial(
+            Some(&[
+                DiscoveredJlinkProbe {
+                    serial: "-1".into(),
+                    product: Some("J-Link (unknown)".into()),
+                },
+                DiscoveredJlinkProbe {
+                    serial: "150712169".into(),
+                    product: Some("J-Link".into()),
+                },
+            ]),
+            "",
+        );
+
+        assert_eq!(serial.as_deref(), Some("150712169"));
+    }
+
+    #[test]
+    fn does_not_autofill_when_user_already_entered_serial() {
+        let serial = autofill_jlink_serial(
+            Some(&[DiscoveredJlinkProbe {
+                serial: "150712169".into(),
+                product: Some("J-Link".into()),
+            }]),
+            "manual-sn",
+        );
+
+        assert_eq!(serial, None);
+    }
+
+    #[test]
+    fn board_profile_applies_known_jlink_defaults() {
+        let mut draft = jlink_ready_draft();
+        let profile = sample_board_profile();
+
+        draft.apply_jlink_board_profile(&profile);
+
+        assert_eq!(draft.jlink_device, "EFR32MG24BXXXF1536");
+        assert_eq!(draft.jlink_interface, "SWD");
+        assert_eq!(draft.jlink_speed_khz, "2700");
+    }
+
+    #[test]
+    fn selected_board_profile_resets_to_custom_after_manual_override() {
+        let mut draft = jlink_ready_draft();
+        let profile = sample_board_profile();
+
+        draft.apply_jlink_board_profile(&profile);
+        assert_eq!(
+            draft.selected_jlink_board_profile_id.as_deref(),
+            Some("brd4186c")
+        );
+
+        draft.mark_jlink_fields_as_manual();
+        draft.jlink_speed_khz = "4000".into();
+        assert_eq!(draft.selected_jlink_board_profile_id, None);
+    }
+
+    #[test]
+    fn explicit_custom_selection_clears_profile_defaults() {
+        let mut draft = jlink_ready_draft();
+        let profile = sample_board_profile();
+
+        draft.apply_jlink_board_profile(&profile);
+        draft.clear_jlink_board_profile_selection();
+
+        assert_eq!(draft.selected_jlink_board_profile_id, None);
+        assert_eq!(draft.jlink_device, "");
+        assert_eq!(draft.jlink_interface, "SWD");
+        assert_eq!(draft.jlink_speed_khz, "4000");
+    }
 }

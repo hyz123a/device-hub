@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use device_hub_shared::{ActionRequest, Device, Job};
+use device_hub_shared::{ActionRequest, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, Job};
 use futures::future::BoxFuture;
 use thiserror::Error;
 
@@ -58,3 +58,22 @@ pub trait DeviceRegistryPort: Send + Sync {
 }
 
 pub type DynDeviceRegistry = Arc<dyn DeviceRegistryPort>;
+
+#[derive(Debug, Error)]
+pub enum HostDiscoveryError {
+    #[error("failed to enumerate serial ports: {0}")]
+    Serial(String),
+    #[error("failed to scan J-Link probes: {0}")]
+    Jlink(String),
+}
+
+pub trait HostDiscoveryPort: Send + Sync {
+    fn list_serial_ports(
+        &self,
+    ) -> BoxFuture<'static, Result<Vec<DiscoveredSerialPort>, HostDiscoveryError>>;
+    fn list_jlink_probes(
+        &self,
+    ) -> BoxFuture<'static, Result<Vec<DiscoveredJlinkProbe>, HostDiscoveryError>>;
+}
+
+pub type DynHostDiscovery = Arc<dyn HostDiscoveryPort>;

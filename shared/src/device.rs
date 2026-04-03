@@ -23,6 +23,18 @@ pub struct DeviceConnectionSummary {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoveredSerialPort {
+    pub path: String,
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoveredJlinkProbe {
+    pub serial: String,
+    pub product: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SshConfig {
     pub host: String,
     pub user: String,

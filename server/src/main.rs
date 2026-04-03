@@ -1,6 +1,10 @@
 use std::net::SocketAddr;
 
-use device_hub_server::{app::build_router, config::AppConfig};
+use device_hub_server::{
+    app::{build_router_with_job_policy_and_board_profiles, load_default_board_profiles},
+    config::AppConfig,
+    services::job_manager::JobPolicyProvider,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -8,7 +12,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.device_registry_path.is_none() {
         config.device_registry_path = Some(".device-registry.yaml".into());
     }
-    let app = build_router(config).await;
+    let board_profiles = load_default_board_profiles();
+    let app = build_router_with_job_policy_and_board_profiles(
+        config,
+        JobPolicyProvider::default(),
+        board_profiles,
+    )
+    .await;
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
 
     println!("device-hub server listening on http://{addr}");

@@ -1,10 +1,12 @@
 use device_hub_server::config::AppConfig;
 use device_hub_shared::{
-    Device, DeviceConnectionSummary, DeviceDetail, JlinkConfig, Job, JobStatus, SerialConfig,
-    SshConfig,
+    Device, DeviceConnectionSummary, DeviceDetail, DiscoveredJlinkProbe, DiscoveredSerialPort,
+    JlinkConfig, Job, JobStatus, SerialConfig, SshConfig,
 };
 
-use crate::helpers::{spawn_app, spawn_app_with_config};
+use crate::helpers::{
+    StaticHostDiscovery, spawn_app, spawn_app_with_config, spawn_app_with_config_and_host_discovery,
+};
 
 fn base_config() -> AppConfig {
     AppConfig {
@@ -238,7 +240,10 @@ async fn create_device_rejects_unconfigured_device() {
 
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
     let body: serde_json::Value = response.json().await.expect("invalid error body");
-    assert_eq!(body["error"], "bad request: device must configure at least one connection");
+    assert_eq!(
+        body["error"],
+        "bad request: device must configure at least one connection"
+    );
 }
 
 #[tokio::test]
@@ -308,13 +313,17 @@ async fn delete_device_rejects_devices_with_active_jobs() {
         .json()
         .await
         .expect("invalid job json");
-    app.wait_for_job_status(&created.id, JobStatus::Running).await;
+    app.wait_for_job_status(&created.id, JobStatus::Running)
+        .await;
 
     let response = app.delete_device("board-alpha").await;
 
     assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
     let body: serde_json::Value = response.json().await.expect("invalid error body");
-    assert_eq!(body["error"], "conflict: device `board-alpha` has active jobs");
+    assert_eq!(
+        body["error"],
+        "conflict: device `board-alpha` has active jobs"
+    );
 
     assert!(app.cancel_job(&created.id).await.status().is_success());
 }
@@ -333,4 +342,84 @@ async fn get_device_returns_404_for_unknown_device() {
     assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     let body: serde_json::Value = response.json().await.expect("invalid error body");
     assert_eq!(body["error"], "device not found");
+}
+
+#[tokio::test]
+async fn list_serial_ports_returns_discovered_host_devices() {
+    let app = spawn_app_with_config_and_host_discovery(
+        base_config(),
+        StaticHostDiscovery {
+            serial_ports: vec![
+                DiscoveredSerialPort {
+                    path: "/dev/ttyUSB1".into(),
+                    label: Some("Segger UART".into()),
+                },
+                DiscoveredSerialPort {
+                    path: "/dev/ttyACM0".into(),
+                    label: Some("Debug console".into()),
+                },
+            ],
+            jlink_probes: Vec::new(),
+        },
+    )
+    .await;
+
+    let response = app.get_serial_ports().await;
+
+    assert!(response.status().is_success());
+    let ports: Vec<DiscoveredSerialPort> =
+        response.json().await.expect("invalid serial ports json");
+    assert_eq!(
+        ports,
+        vec![
+            DiscoveredSerialPort {
+                path: "/dev/ttyACM0".into(),
+                label: Some("Debug console".into()),
+            },
+            DiscoveredSerialPort {
+                path: "/dev/ttyUSB1".into(),
+                label: Some("Segger UART".into()),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn list_jlink_probes_returns_connected_probes() {
+    let app = spawn_app_with_config_and_host_discovery(
+        base_config(),
+        StaticHostDiscovery {
+            serial_ports: Vec::new(),
+            jlink_probes: vec![
+                DiscoveredJlinkProbe {
+                    serial: "987654321".into(),
+                    product: Some("J-Link PLUS".into()),
+                },
+                DiscoveredJlinkProbe {
+                    serial: "123456789".into(),
+                    product: Some("J-Link EDU Mini".into()),
+                },
+            ],
+        },
+    )
+    .await;
+
+    let response = app.get_jlink_probes().await;
+
+    assert!(response.status().is_success());
+    let probes: Vec<DiscoveredJlinkProbe> =
+        response.json().await.expect("invalid jlink probes json");
+    assert_eq!(
+        probes,
+        vec![
+            DiscoveredJlinkProbe {
+                serial: "123456789".into(),
+                product: Some("J-Link EDU Mini".into()),
+            },
+            DiscoveredJlinkProbe {
+                serial: "987654321".into(),
+                product: Some("J-Link PLUS".into()),
+            },
+        ]
+    );
 }
