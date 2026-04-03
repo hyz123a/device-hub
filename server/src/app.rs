@@ -5,7 +5,7 @@ use axum::{
 use device_hub_adapter_jlink::JlinkAdapter;
 use device_hub_adapter_serial::SerialAdapter;
 use device_hub_adapter_ssh::SshAdapter;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use tower_http::cors::CorsLayer;
 
 use crate::{
@@ -67,13 +67,17 @@ async fn build_router_with_job_policy_and_serial_adapter(
 ) -> Router {
     let AppConfig {
         devices: configured_devices,
+        device_registry_path,
         ssh_program,
         jlink_program,
         artifacts_dir,
     } = config;
     let artifacts = ArtifactStore::new(artifacts_dir.unwrap_or_else(|| ".artifacts".into()));
     let events = EventBus::new(1_000, Some(artifacts.clone()));
-    let devices = DeviceRegistry::new(configured_devices);
+    let devices = Arc::new(
+        DeviceRegistry::new(configured_devices, device_registry_path.map(PathBuf::from))
+            .expect("failed to initialize device registry"),
+    );
     let jobs = JobStore::new();
     let ssh_adapter = match ssh_program {
         Some(program) => SshAdapter::with_program(program),
@@ -108,8 +112,13 @@ async fn build_router_with_job_policy_and_serial_adapter(
 
     let api_router = Router::new()
         .route("/", get(api::root))
-        .route("/devices", get(api::list_devices))
-        .route("/devices/{device_id}", get(api::get_device))
+        .route("/devices", get(api::list_devices).post(api::create_device))
+        .route(
+            "/devices/{device_id}",
+            get(api::get_device)
+                .put(api::update_device)
+                .delete(api::delete_device),
+        )
         .route("/jobs", get(api::list_jobs))
         .route(
             "/devices/{device_id}/actions/{action}",

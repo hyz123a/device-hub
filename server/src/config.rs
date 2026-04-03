@@ -9,6 +9,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub devices: Vec<Device>,
     #[serde(default)]
+    pub device_registry_path: Option<String>,
+    #[serde(default)]
     pub ssh_program: Option<String>,
     #[serde(default)]
     pub jlink_program: Option<String>,

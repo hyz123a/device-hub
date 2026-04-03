@@ -52,6 +52,32 @@ impl TestApp {
             .expect("failed to execute request")
     }
 
+    pub async fn create_device(&self, device: &Device) -> reqwest::Response {
+        self.api_client
+            .post(self.endpoint("/api/devices"))
+            .json(device)
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
+    pub async fn update_device(&self, device_id: &str, device: &Device) -> reqwest::Response {
+        self.api_client
+            .put(self.endpoint(&format!("/api/devices/{device_id}")))
+            .json(device)
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
+    pub async fn delete_device(&self, device_id: &str) -> reqwest::Response {
+        self.api_client
+            .delete(self.endpoint(&format!("/api/devices/{device_id}")))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
     pub async fn get_job_evidence(&self, job_id: &str) -> reqwest::Response {
         self.api_client
             .get(self.endpoint(&format!("/api/jobs/{job_id}/evidence")))
@@ -241,6 +267,7 @@ fn test_config() -> AppConfig {
                 }),
             },
         ],
+        device_registry_path: None,
         ssh_program: None,
         jlink_program: None,
         artifacts_dir: None,

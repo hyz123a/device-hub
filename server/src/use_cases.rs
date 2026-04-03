@@ -1,20 +1,21 @@
-use device_hub_shared::{ActionRequest, Device, Job};
+use device_hub_shared::{ActionRequest, Device, Job, JobStatus};
 
 use crate::{
     error::AppError,
+    ports::{DeviceRegistryError, DynDeviceRegistry},
     services::job_manager::JobManager,
-    storage::{device_registry::DeviceRegistry, job_store::JobStore},
+    storage::job_store::JobStore,
 };
 
 #[derive(Clone)]
 pub struct AppUseCases {
-    devices: DeviceRegistry,
+    devices: DynDeviceRegistry,
     jobs: JobStore,
     job_manager: JobManager,
 }
 
 impl AppUseCases {
-    pub fn new(devices: DeviceRegistry, jobs: JobStore, job_manager: JobManager) -> Self {
+    pub fn new(devices: DynDeviceRegistry, jobs: JobStore, job_manager: JobManager) -> Self {
         Self {
             devices,
             jobs,
@@ -28,6 +29,33 @@ impl AppUseCases {
 
     pub fn get_device(&self, device_id: &str) -> Result<Device, AppError> {
         self.devices.get(device_id).ok_or(AppError::DeviceNotFound)
+    }
+
+    pub fn create_device(&self, device: Device) -> Result<Device, AppError> {
+        validate_device(&device)?;
+        self.devices
+            .create(device)
+            .map_err(map_device_registry_error)
+    }
+
+    pub fn update_device(&self, device_id: &str, device: Device) -> Result<Device, AppError> {
+        if device.id != device_id {
+            return Err(AppError::BadRequest(
+                "device id in path must match request body".into(),
+            ));
+        }
+        validate_device(&device)?;
+        ensure_device_has_no_active_jobs(&self.jobs, device_id)?;
+        self.devices
+            .update(device)
+            .map_err(map_device_registry_error)
+    }
+
+    pub fn delete_device(&self, device_id: &str) -> Result<Device, AppError> {
+        ensure_device_has_no_active_jobs(&self.jobs, device_id)?;
+        self.devices
+            .delete(device_id)
+            .map_err(map_device_registry_error)
     }
 
     pub fn list_jobs(&self, device_id: Option<&str>) -> Vec<Job> {
@@ -70,6 +98,89 @@ impl AppUseCases {
     }
 }
 
+fn map_device_registry_error(error: DeviceRegistryError) -> AppError {
+    match error {
+        DeviceRegistryError::NotFound => AppError::DeviceNotFound,
+        DeviceRegistryError::AlreadyExists(device_id) => {
+            AppError::Conflict(format!("device `{device_id}` already exists"))
+        }
+        DeviceRegistryError::Persistence(message) => AppError::Internal(message),
+    }
+}
+
+fn ensure_device_has_no_active_jobs(jobs: &JobStore, device_id: &str) -> Result<(), AppError> {
+    if jobs.list().into_iter().any(|job| {
+        job.device_id == device_id && matches!(job.status, JobStatus::Pending | JobStatus::Running)
+    }) {
+        return Err(AppError::Conflict(format!(
+            "device `{device_id}` has active jobs"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_device(device: &Device) -> Result<(), AppError> {
+    if device.id.trim().is_empty() {
+        return Err(AppError::BadRequest("device id is required".into()));
+    }
+    if device.id.trim() != device.id {
+        return Err(AppError::BadRequest(
+            "device id must not include leading or trailing whitespace".into(),
+        ));
+    }
+    if device.id.contains('/') {
+        return Err(AppError::BadRequest(
+            "device id must not contain `/`".into(),
+        ));
+    }
+    if device.label.trim().is_empty() {
+        return Err(AppError::BadRequest("device label is required".into()));
+    }
+    if device.ssh.is_none() && device.serial.is_none() && device.jlink.is_none() {
+        return Err(AppError::BadRequest(
+            "device must configure at least one connection".into(),
+        ));
+    }
+
+    if let Some(ssh) = &device.ssh {
+        if ssh.host.trim().is_empty() || ssh.user.trim().is_empty() || ssh.key.trim().is_empty() {
+            return Err(AppError::BadRequest(
+                "ssh config requires host, user, and key".into(),
+            ));
+        }
+    }
+
+    if let Some(serial) = &device.serial {
+        if serial.port.trim().is_empty() {
+            return Err(AppError::BadRequest("serial config requires a port".into()));
+        }
+        if serial.baud == 0 {
+            return Err(AppError::BadRequest(
+                "serial config requires baud > 0".into(),
+            ));
+        }
+    }
+
+    if let Some(jlink) = &device.jlink {
+        if jlink.serial.trim().is_empty()
+            || jlink.device.trim().is_empty()
+            || jlink.interface.trim().is_empty()
+        {
+            return Err(AppError::BadRequest(
+                "jlink config requires serial, device, and interface".into(),
+            ));
+        }
+        if jlink.speed_khz == 0 {
+            return Err(AppError::BadRequest(
+                "jlink config requires speed_khz > 0".into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_action(action: &str, device: &Device) -> Result<(), AppError> {
     let supported = match action {
         "ssh.exec" | "ssh.tail" | "ssh.reboot" => device.ssh.is_some(),
@@ -101,12 +212,12 @@ fn validate_payload(action: &str, payload: Option<&ActionRequest>) -> Result<(),
         "ssh.exec" if value.is_none_or(|command| command.trim().is_empty()) => Err(
             AppError::BadRequest("action `ssh.exec` requires a command payload".into()),
         ),
-        "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(AppError::BadRequest(
-            "action `ssh.tail` requires a log path payload".into(),
-        )),
-        "serial.write" if value.is_none_or(|input| input.is_empty()) => Err(AppError::BadRequest(
-            "action `serial.write` requires a payload".into(),
-        )),
+        "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(
+            AppError::BadRequest("action `ssh.tail` requires a log path payload".into()),
+        ),
+        "serial.write" if value.is_none_or(|input| input.is_empty()) => {
+            Err(AppError::BadRequest("action `serial.write` requires a payload".into()))
+        }
         "jlink.flash" if value.is_none_or(|path| path.trim().is_empty()) => Err(
             AppError::BadRequest("action `jlink.flash` requires a firmware path payload".into()),
         ),
