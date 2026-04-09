@@ -8,11 +8,12 @@ license.workspace = true
 chrono.workspace = true
 device-hub-shared = { path = "../shared" }
 gloo-net.workspace = true
+gloo-timers = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 urlencoding = "2"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["ErrorEvent", "Event", "HtmlInputElement", "HtmlSelectElement", "HtmlTextAreaElement", "KeyboardEvent", "Location", "MessageEvent", "WebSocket", "Window"] }
+web-sys = { version = "0.3", features = ["CssStyleDeclaration", "Document", "ErrorEvent", "Event", "HtmlInputElement", "HtmlSelectElement", "HtmlTextAreaElement", "KeyboardEvent", "Location", "MessageEvent", "MouseEvent", "Selection", "WebSocket", "Window"] }
 yew.workspace = true
 yew-router.workspace = true

@@ -34,3 +34,7 @@
 - [x] Add adapter support and stable server seams for serial port enumeration and J-Link probe scanning                                   
 - [x] Add device page selectors that let operators choose a scanned serial path or J-Link probe while still allowing manual entry           
 - [x] Add tests covering discovery API responses and device-page scan-driven selection flows
+- [x] Profile the frontend live-log viewer to identify the main rendering and popup-open bottlenecks with large log volumes
+- [x] Optimize append rendering and scroll behavior for long-running logs so streaming remains responsive under load
+- [x] Freeze viewport anchoring while the user has an active text selection so copied content does not drift as new logs arrive
+- [x] Add verification for large static logs, sustained streaming logs, and text-selection copy behavior in the frontend log viewer
