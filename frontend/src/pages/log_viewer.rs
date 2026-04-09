@@ -1,7 +1,11 @@
 use chrono::{DateTime, Utc};
 use device_hub_shared::{LogChannel, LogEvent, LogLevel, LogSource};
+use gloo_timers::callback::Timeout;
 use wasm_bindgen::{JsCast, closure::Closure};
-use web_sys::{ErrorEvent, Event, HtmlElement, HtmlInputElement, MessageEvent, WebSocket};
+use web_sys::{
+    ErrorEvent, Event, HtmlElement, HtmlInputElement, HtmlSelectElement, KeyboardEvent,
+    MessageEvent, MouseEvent, WebSocket, window,
+};
 use yew::prelude::*;
 
 use crate::api;
@@ -25,6 +29,13 @@ struct WsBindings {
 }
 
 const EVENT_PAGE_SIZE: usize = 50;
+const DEFAULT_BUFFERED_EVENTS: usize = 2_000;
+const RENDER_FLUSH_DELAY_MS: u32 = 80;
+const STREAM_VIRTUALIZATION_MIN_CHUNKS: usize = 100;
+const STREAM_VIRTUALIZATION_OVERSCAN_PX: i32 = 480;
+const STREAM_CHUNK_BASE_HEIGHT_PX: i32 = 56;
+const STREAM_CHUNK_LINE_HEIGHT_PX: i32 = 20;
+const STREAM_WRAP_WIDTH_CHARS: usize = 120;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LogViewMode {
@@ -50,13 +61,23 @@ struct StreamChunk {
     lines: Vec<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StreamWindow {
+    start_index: usize,
+    end_index: usize,
+    top_padding_px: i32,
+    bottom_padding_px: i32,
+}
+
 const STREAM_TAIL_LOCK_THRESHOLD_PX: i32 = 0;
 
 #[function_component(LogViewerPage)]
 pub fn log_viewer_page(props: &LogViewerProps) -> Html {
     let events = use_state(Vec::<LogEvent>::new);
+    let buffered_event_limit = use_state(|| DEFAULT_BUFFERED_EVENTS);
     let current_page = use_state(|| 0_usize);
     let event_store = use_mut_ref(Vec::<LogEvent>::new);
+    let pending_render = use_mut_ref(|| Option::<Timeout>::None);
     let device_filter = use_state(|| props.device_id.clone().unwrap_or_default());
     let job_filter = use_state(String::new);
     let search_query = use_state(String::new);
@@ -66,6 +87,11 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
     let view_mode = use_state(|| LogViewMode::Stream);
     let stream_filter = use_state(|| StreamFilter::DeviceLogs);
     let follow_stream_tail = use_state(|| true);
+    let logs_fullscreen = use_state(|| false);
+    let stream_scroll_top = use_state(|| 0_i32);
+    let stream_viewport_height = use_state(|| 720_i32);
+    let selection_lock_active = use_state(|| false);
+    let frozen_stream_chunks = use_state(|| Option::<Vec<StreamChunk>>::None);
     let stream_container_ref = use_node_ref();
     let last_stream_scroll_top = use_mut_ref(|| 0_i32);
     let socket = use_mut_ref(|| Option::<WsBindings>::None);
@@ -87,6 +113,8 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
         let job_filter = job_filter.clone();
         let connection = connection.clone();
         let error = error.clone();
+        let buffered_event_limit = buffered_event_limit.clone();
+        let pending_render = pending_render.clone();
         let socket = socket.clone();
         use_effect_with(*connect_revision, move |_| {
             if let Some(existing) = socket.borrow_mut().take() {
@@ -98,6 +126,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
             events.set(Vec::new());
             current_page.set(0);
             *event_store.borrow_mut() = Vec::new();
+            pending_render.borrow_mut().take();
 
             match api::ws_url(Some(&device_filter), Some(&job_filter)) {
                 Ok(url) => match WebSocket::new(&url) {
@@ -112,6 +141,8 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                         let message_events = events.clone();
                         let message_store = event_store.clone();
                         let message_error = error.clone();
+                        let buffered_event_limit = buffered_event_limit.clone();
+                        let pending_render = pending_render.clone();
                         let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
                             if let Some(text) = event.data().as_string() {
                                 match serde_json::from_str::<LogEvent>(&text) {
@@ -127,11 +158,27 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                                                 && existing.message == log_event.message
                                         }) {
                                             next.push(log_event);
-                                            if next.len() > 200 {
-                                                let drain = next.len() - 200;
-                                                next.drain(0..drain);
+                                            trim_buffered_events(&mut next, *buffered_event_limit);
+                                            if pending_render.borrow().is_none() {
+                                                let message_events = message_events.clone();
+                                                let message_store = message_store.clone();
+                                                let pending_render_for_timer =
+                                                    pending_render.clone();
+                                                let pending_render_for_callback =
+                                                    pending_render.clone();
+                                                *pending_render_for_timer.borrow_mut() =
+                                                    Some(Timeout::new(
+                                                        RENDER_FLUSH_DELAY_MS,
+                                                        move || {
+                                                            let snapshot =
+                                                                message_store.borrow().clone();
+                                                            message_events.set(snapshot);
+                                                            pending_render_for_callback
+                                                                .borrow_mut()
+                                                                .take();
+                                                        },
+                                                    ));
                                             }
-                                            message_events.set(next.clone());
                                         }
                                     }
                                     Err(parse_error) => {
@@ -177,7 +224,9 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
             }
 
             let socket = socket.clone();
+            let pending_render = pending_render.clone();
             move || {
+                pending_render.borrow_mut().take();
                 if let Some(existing) = socket.borrow_mut().take() {
                     let _ = existing.socket.close();
                 }
@@ -216,6 +265,16 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
         })
     };
 
+    let on_buffer_limit_change = {
+        let buffered_event_limit = buffered_event_limit.clone();
+        Callback::from(move |event: Event| {
+            let select: HtmlSelectElement = event.target_unchecked_into();
+            if let Ok(next_limit) = select.value().parse::<usize>() {
+                buffered_event_limit.set(next_limit);
+            }
+        })
+    };
+
     let status_class = match connection.as_str() {
         "connected" => {
             "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong"
@@ -226,11 +285,17 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
         _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
     };
     let search_query_value = search_query.trim().to_ascii_lowercase();
-    let matched_events = events
-        .iter()
-        .filter(|event| matches_search_query(event, &search_query_value))
-        .cloned()
-        .collect::<Vec<_>>();
+    let matched_events = use_memo(
+        (events.clone(), search_query_value.clone()),
+        |(events, search_query_value)| {
+            events
+                .iter()
+                .filter(|event| matches_search_query(event, search_query_value))
+                .cloned()
+                .collect::<Vec<_>>()
+        },
+    );
+    let matched_events = &*matched_events;
     let total_events = matched_events.len();
     let total_pages = total_events.max(1).div_ceil(EVENT_PAGE_SIZE);
     let page = (*current_page).min(total_pages.saturating_sub(1));
@@ -238,16 +303,45 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
     let start_index = end_index.saturating_sub(EVENT_PAGE_SIZE);
     let shown_events = end_index.saturating_sub(start_index);
     let visible_events = matched_events[start_index..end_index].to_vec();
-    let filtered_stream_events = events
-        .iter()
-        .filter(|event| {
-            matches_stream_filter(event, &stream_filter)
-                && matches_search_query(event, &search_query_value)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let stream_chunks = build_stream_chunks(&filtered_stream_events);
-    let available_sources = available_device_sources(events.as_ref());
+    let filtered_stream_events = use_memo(
+        (
+            events.clone(),
+            (*stream_filter).clone(),
+            search_query_value.clone(),
+        ),
+        |(events, stream_filter, search_query_value)| {
+            events
+                .iter()
+                .filter(|event| {
+                    matches_stream_filter(event, stream_filter)
+                        && matches_search_query(event, search_query_value)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        },
+    );
+    let filtered_stream_events = &*filtered_stream_events;
+    let stream_chunks = use_memo(filtered_stream_events.clone(), |filtered_stream_events| {
+        build_stream_chunks(filtered_stream_events)
+    });
+    let stream_chunks = &*stream_chunks;
+    let displayed_stream_chunks = if *selection_lock_active {
+        (*frozen_stream_chunks)
+            .clone()
+            .unwrap_or_else(|| (*stream_chunks).clone())
+    } else {
+        (*stream_chunks).clone()
+    };
+    let stream_window = compute_stream_window(
+        &displayed_stream_chunks,
+        *stream_scroll_top,
+        *stream_viewport_height,
+        STREAM_VIRTUALIZATION_OVERSCAN_PX,
+    );
+    let visible_stream_chunks =
+        &displayed_stream_chunks[stream_window.start_index..stream_window.end_index];
+    let available_sources = use_memo(events.clone(), |events| available_device_sources(events));
+    let available_sources = &*available_sources;
     let show_serial_write_panel = *view_mode == LogViewMode::Stream
         && matches!(&*stream_filter, StreamFilter::Source(LogSource::Serial))
         && props.device_id.is_some();
@@ -274,13 +368,17 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
 
     let on_jump_to_latest = {
         let follow_stream_tail = follow_stream_tail.clone();
+        let stream_scroll_top = stream_scroll_top.clone();
+        let selection_lock_active = selection_lock_active.clone();
         let stream_container_ref = stream_container_ref.clone();
         let last_stream_scroll_top = last_stream_scroll_top.clone();
         Callback::from(move |_| {
+            selection_lock_active.set(false);
             follow_stream_tail.set(true);
             if let Some(element) = stream_container_ref.cast::<HtmlElement>() {
                 element.set_scroll_top(element.scroll_height());
                 *last_stream_scroll_top.borrow_mut() = element.scroll_top();
+                stream_scroll_top.set(element.scroll_top());
             }
         })
     };
@@ -303,10 +401,14 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
     let on_stream_scroll = {
         let stream_container_ref = stream_container_ref.clone();
         let follow_stream_tail = follow_stream_tail.clone();
+        let stream_scroll_top = stream_scroll_top.clone();
+        let stream_viewport_height = stream_viewport_height.clone();
         let last_stream_scroll_top = last_stream_scroll_top.clone();
         Callback::from(move |_| {
             if let Some(element) = stream_container_ref.cast::<HtmlElement>() {
                 *last_stream_scroll_top.borrow_mut() = element.scroll_top();
+                stream_scroll_top.set(element.scroll_top());
+                stream_viewport_height.set(element.client_height());
                 follow_stream_tail.set(is_stream_scrolled_to_bottom(
                     &element,
                     STREAM_TAIL_LOCK_THRESHOLD_PX,
@@ -316,11 +418,44 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
     };
 
     {
+        let events = events.clone();
+        let event_store = event_store.clone();
+        let current_page = current_page.clone();
+        use_effect_with(*buffered_event_limit, move |buffered_event_limit| {
+            let mut next = event_store.borrow().clone();
+            trim_buffered_events(&mut next, *buffered_event_limit);
+            *event_store.borrow_mut() = next.clone();
+            events.set(next);
+            current_page.set(0);
+            || {}
+        });
+    }
+
+    {
+        let frozen_stream_chunks = frozen_stream_chunks.clone();
+        let stream_chunks = (*stream_chunks).clone();
+        let selection_lock_active = selection_lock_active.clone();
+        use_effect_with((*selection_lock_active, stream_chunks.clone()), move |_| {
+            if *selection_lock_active {
+                if frozen_stream_chunks.is_none() {
+                    frozen_stream_chunks.set(Some(stream_chunks.clone()));
+                }
+            } else if frozen_stream_chunks.is_some() {
+                frozen_stream_chunks.set(None);
+            }
+            || {}
+        });
+    }
+
+    {
         let stream_container_ref = stream_container_ref.clone();
         let follow_stream_tail = follow_stream_tail.clone();
+        let stream_scroll_top = stream_scroll_top.clone();
+        let stream_viewport_height = stream_viewport_height.clone();
+        let selection_lock_active = selection_lock_active.clone();
         let last_stream_scroll_top = last_stream_scroll_top.clone();
         let view_mode_value = *view_mode;
-        let stream_chunk_count = stream_chunks.len();
+        let stream_chunk_count = displayed_stream_chunks.len();
         let filtered_event_count = filtered_stream_events.len();
         use_effect_with(
             (
@@ -328,15 +463,22 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                 stream_chunk_count,
                 filtered_event_count,
                 *follow_stream_tail,
+                *selection_lock_active,
             ),
             move |_| {
                 if view_mode_value == LogViewMode::Stream {
                     if let Some(element) = stream_container_ref.cast::<HtmlElement>() {
-                        if *follow_stream_tail {
+                        stream_viewport_height.set(element.client_height());
+                        if *selection_lock_active {
+                            *last_stream_scroll_top.borrow_mut() = element.scroll_top();
+                            stream_scroll_top.set(element.scroll_top());
+                        } else if *follow_stream_tail {
                             element.set_scroll_top(element.scroll_height());
                             *last_stream_scroll_top.borrow_mut() = element.scroll_top();
+                            stream_scroll_top.set(element.scroll_top());
                         } else {
                             element.set_scroll_top(*last_stream_scroll_top.borrow());
+                            stream_scroll_top.set(element.scroll_top());
                         }
                     }
                 }
@@ -352,6 +494,38 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
         use_effect_with((view_mode_value, stream_filter_value), move |_| {
             *last_stream_scroll_top.borrow_mut() = 0;
             || {}
+        });
+    }
+
+    let on_stream_select_start = {
+        let selection_lock_active = selection_lock_active.clone();
+        Callback::from(move |_event: Event| selection_lock_active.set(true))
+    };
+
+    let on_stream_selection_change = {
+        let selection_lock_active = selection_lock_active.clone();
+        Callback::from(move |_event: MouseEvent| {
+            selection_lock_active.set(has_active_text_selection());
+        })
+    };
+
+    let on_stream_selection_key_up = {
+        let selection_lock_active = selection_lock_active.clone();
+        Callback::from(move |_event: KeyboardEvent| {
+            selection_lock_active.set(has_active_text_selection());
+        })
+    };
+
+    let on_toggle_logs_fullscreen = {
+        let logs_fullscreen = logs_fullscreen.clone();
+        Callback::from(move |_| logs_fullscreen.set(!*logs_fullscreen))
+    };
+
+    {
+        let logs_fullscreen = logs_fullscreen.clone();
+        use_effect_with(*logs_fullscreen, move |is_fullscreen| {
+            set_page_scroll_locked(*is_fullscreen);
+            || set_page_scroll_locked(false)
         });
     }
 
@@ -379,7 +553,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                     </label>
                     <button class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95" onclick={on_reconnect}>{"Reconnect stream"}</button>
                 </div>
-                <div class="mt-4">
+                <div class="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_14rem]">
                     <label class="grid gap-2 text-sm text-ink-muted">
                         <span>{"Search logs"}</span>
                         <input
@@ -389,10 +563,19 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                             placeholder="message, source, level, device_id, job_id"
                         />
                     </label>
+                    <label class="grid gap-2 text-sm text-ink-muted">
+                        <span>{"Buffered cap"}</span>
+                        <select class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10" onchange={on_buffer_limit_change} value={buffered_event_limit.to_string()}>
+                            <option value="500">{"500"}</option>
+                            <option value="1000">{"1000"}</option>
+                            <option value="2000">{"2000"}</option>
+                            <option value="5000">{"5000"}</option>
+                        </select>
+                    </label>
                 </div>
                 <div class="mt-4 flex flex-wrap items-center gap-3">
                     <span class={status_class}>{(*connection).clone()}</span>
-                    <span class="font-mono text-sm text-ink-muted">{format!("{} matched / {} buffered", matched_events.len(), events.len())}</span>
+                    <span class="font-mono text-sm text-ink-muted">{format!("{} matched / {} buffered (cap {})", matched_events.len(), events.len(), *buffered_event_limit)}</span>
                 </div>
                 {
                     if let Some(message) = (*error).clone() {
@@ -402,7 +585,21 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                     }
                 }
             </article>
-            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+            <article class={classes!(
+                "rounded-[24px]",
+                "border",
+                "border-black/10",
+                "bg-white/80",
+                "p-6",
+                "shadow-shell",
+                "backdrop-blur",
+                "xl:col-span-2",
+                if *logs_fullscreen {
+                    Some("fixed inset-4 z-[70] overflow-auto bg-white/95")
+                } else {
+                    None
+                }
+            )}>
                 <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
                     <div class="flex flex-wrap items-center gap-3">
                         <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Logs"}</span>
@@ -457,16 +654,33 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                             } else {
                                 html! {
                                     <>
-                                        <span class="font-mono text-sm text-ink-muted">{format!("{} events -> {} chunks", filtered_stream_events.len(), stream_chunks.len())}</span>
+                                        <span class="font-mono text-sm text-ink-muted">{format!("{} events -> {} chunks", filtered_stream_events.len(), displayed_stream_chunks.len())}</span>
                                         <button
                                             class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
                                             onclick={on_jump_to_latest}
-                                            disabled={*follow_stream_tail}
+                                            disabled={*follow_stream_tail && !*selection_lock_active}
                                         >{"Jump to latest"}</button>
                                     </>
                                 }
                             }
                         }
+                        {
+                            if *view_mode == LogViewMode::Stream && *selection_lock_active {
+                                html! { <span class="font-mono text-sm text-amber-700">{"selection locked"}</span> }
+                            } else {
+                                Html::default()
+                            }
+                        }
+                        <button
+                            class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white"
+                            onclick={on_toggle_logs_fullscreen.clone()}
+                        >{
+                            if *logs_fullscreen {
+                                "Exit full screen"
+                            } else {
+                                "Full screen"
+                            }
+                        }</button>
                     </div>
                 </div>
                 <div class="grid gap-4">
@@ -485,7 +699,18 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                             html! { <p class="m-0 text-ink-muted">{"No logs match the current stream filter on this page."}</p> }
                         } else {
                             html! {
-                                {view_stream_terminal(&stream_chunks, stream_container_ref.clone(), on_stream_scroll.clone())}
+                                {view_stream_terminal(
+                                    &displayed_stream_chunks,
+                                    visible_stream_chunks,
+                                    stream_window,
+                                    stream_container_ref.clone(),
+                                    on_stream_scroll.clone(),
+                                    on_stream_select_start.clone(),
+                                    on_stream_selection_change.clone(),
+                                    on_stream_selection_key_up.clone(),
+                                    *selection_lock_active,
+                                    *logs_fullscreen,
+                                )}
                             }
                         }
                     }
@@ -578,6 +803,13 @@ fn build_stream_chunks(events: &[LogEvent]) -> Vec<StreamChunk> {
     chunks
 }
 
+fn trim_buffered_events(events: &mut Vec<LogEvent>, max_events: usize) {
+    if events.len() > max_events {
+        let drain = events.len() - max_events;
+        events.drain(0..drain);
+    }
+}
+
 fn should_merge_stream_chunk(chunk: &StreamChunk, event: &LogEvent) -> bool {
     let is_structured_event = matches!(event.source, LogSource::System | LogSource::Job)
         || matches!(event.channel, LogChannel::System);
@@ -611,24 +843,60 @@ fn severity_rank(level: &LogLevel) -> u8 {
 }
 
 fn view_stream_terminal(
-    chunks: &[StreamChunk],
+    all_chunks: &[StreamChunk],
+    visible_chunks: &[StreamChunk],
+    stream_window: StreamWindow,
     stream_container_ref: NodeRef,
     on_stream_scroll: Callback<Event>,
+    on_stream_select_start: Callback<Event>,
+    on_stream_mouse_up: Callback<MouseEvent>,
+    on_stream_key_up: Callback<KeyboardEvent>,
+    selection_lock_active: bool,
+    logs_fullscreen: bool,
 ) -> Html {
     html! {
         <div class="overflow-hidden rounded-[20px] border border-black/10 bg-[#111827] shadow-inner">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-white/5 px-4 py-3">
                 <div class="flex flex-wrap items-center gap-2">
                     <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-100">{"stream"}</span>
-                    <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-300">{format!("{} chunks", chunks.len())}</span>
+                    <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-300">{format!("{} chunks", all_chunks.len())}</span>
                 </div>
-                <span class="font-mono text-xs text-slate-400">{"merged terminal view"}</span>
+                <span class="font-mono text-xs text-slate-400">{
+                    if selection_lock_active {
+                        "merged terminal view · selection frozen"
+                    } else {
+                        "merged terminal view"
+                    }
+                }</span>
             </div>
-            <div ref={stream_container_ref} class="min-w-0 max-h-[70vh] overflow-auto px-4 py-4 font-mono text-sm text-slate-100 [overflow-anchor:none]" onscroll={on_stream_scroll}>
+            <div
+                ref={stream_container_ref}
+                class={classes!(
+                    "min-w-0",
+                    "overflow-auto",
+                    "px-4",
+                    "py-4",
+                    "font-mono",
+                    "text-sm",
+                    "text-slate-100",
+                    "[overflow-anchor:none]",
+                    if logs_fullscreen {
+                        Some("max-h-[calc(100vh-14rem)]")
+                    } else {
+                        Some("max-h-[70vh]")
+                    }
+                )}
+                onscroll={on_stream_scroll}
+                onselectstart={on_stream_select_start}
+                onmouseup={on_stream_mouse_up}
+                onkeyup={on_stream_key_up}
+            >
+                <div style={format!("height: {}px;", stream_window.top_padding_px.max(0))}></div>
                 {
-                    for chunks.iter().enumerate().map(|(index, chunk)| {
+                    for visible_chunks.iter().enumerate().map(|(index, chunk)| {
+                        let chunk_index = stream_window.start_index + index;
                         html! {
-                            <div class={classes!(if index > 0 { Some("mt-4 border-t border-white/10 pt-4") } else { None })}>
+                            <div class={classes!(if chunk_index > 0 { Some("mt-4 border-t border-white/10 pt-4") } else { None })}>
                                 <div class="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
                                     <div class="flex flex-wrap items-center gap-2">
                                         <span class={stream_badge_class(&chunk.channel)}>{format_stream_source(&chunk.source, &chunk.channel)}</span>
@@ -656,8 +924,122 @@ fn view_stream_terminal(
                         }
                     })
                 }
+                <div style={format!("height: {}px;", stream_window.bottom_padding_px.max(0))}></div>
             </div>
         </div>
+    }
+}
+
+fn compute_stream_window(
+    chunks: &[StreamChunk],
+    scroll_top: i32,
+    viewport_height: i32,
+    overscan_px: i32,
+) -> StreamWindow {
+    if chunks.is_empty() {
+        return StreamWindow {
+            start_index: 0,
+            end_index: 0,
+            top_padding_px: 0,
+            bottom_padding_px: 0,
+        };
+    }
+
+    if chunks.len() < STREAM_VIRTUALIZATION_MIN_CHUNKS {
+        return StreamWindow {
+            start_index: 0,
+            end_index: chunks.len(),
+            top_padding_px: 0,
+            bottom_padding_px: 0,
+        };
+    }
+
+    let scroll_start = scroll_top.saturating_sub(overscan_px).max(0);
+    let scroll_end = scroll_top
+        .saturating_add(viewport_height.max(STREAM_CHUNK_BASE_HEIGHT_PX))
+        .saturating_add(overscan_px);
+
+    let estimated_heights = chunks
+        .iter()
+        .map(estimate_stream_chunk_height)
+        .collect::<Vec<_>>();
+    let total_height = estimated_heights.iter().sum::<i32>();
+    let mut traversed_height = 0;
+    let mut start_index = chunks.len();
+    let mut end_index = chunks.len();
+    let mut top_padding_px = 0;
+
+    for (index, chunk_height) in estimated_heights.iter().enumerate() {
+        let next_height = traversed_height + chunk_height;
+
+        if start_index == chunks.len() && next_height >= scroll_start {
+            start_index = index;
+            top_padding_px = traversed_height;
+        }
+
+        if next_height >= scroll_end {
+            end_index = index + 1;
+            break;
+        }
+
+        traversed_height = next_height;
+    }
+
+    if start_index == chunks.len() {
+        start_index = chunks.len().saturating_sub(1);
+        top_padding_px = total_height - estimated_heights[start_index];
+    }
+
+    if end_index == chunks.len() {
+        end_index = chunks.len();
+    }
+
+    let visible_height = estimated_heights[start_index..end_index]
+        .iter()
+        .sum::<i32>();
+    let bottom_padding_px = total_height - top_padding_px - visible_height;
+
+    StreamWindow {
+        start_index,
+        end_index,
+        top_padding_px,
+        bottom_padding_px,
+    }
+}
+
+fn estimate_stream_chunk_height(chunk: &StreamChunk) -> i32 {
+    let line_count = chunk
+        .lines
+        .iter()
+        .map(|line| estimate_visual_line_count(line))
+        .sum::<usize>()
+        .max(1) as i32;
+
+    STREAM_CHUNK_BASE_HEIGHT_PX + (line_count * STREAM_CHUNK_LINE_HEIGHT_PX)
+}
+
+fn estimate_visual_line_count(line: &str) -> usize {
+    let char_count = line.chars().count().max(1);
+    char_count.div_ceil(STREAM_WRAP_WIDTH_CHARS)
+}
+
+fn has_active_text_selection() -> bool {
+    window()
+        .and_then(|window| window.get_selection().ok().flatten())
+        .is_some_and(|selection| !String::from(selection.to_string()).trim().is_empty())
+}
+
+fn set_page_scroll_locked(locked: bool) {
+    if let Some(body) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.body())
+    {
+        let style = body.style();
+        if locked {
+            let _ = style.set_property("overflow", "hidden");
+        } else {
+            let _ = style.remove_property("overflow");
+        }
     }
 }
 
@@ -762,5 +1144,115 @@ fn stream_body_class(level: &LogLevel) -> &'static str {
         LogLevel::Warn => "text-amber-200",
         LogLevel::Info => "text-slate-100",
         LogLevel::Debug => "text-slate-300",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn sample_event(index: usize, message: impl Into<String>) -> LogEvent {
+        LogEvent {
+            ts: Utc
+                .timestamp_opt(index as i64, 0)
+                .single()
+                .expect("valid timestamp"),
+            device_id: "board-alpha".into(),
+            job_id: "job-1".into(),
+            source: LogSource::Serial,
+            channel: LogChannel::Stdout,
+            level: LogLevel::Info,
+            message: message.into(),
+        }
+    }
+
+    #[test]
+    fn trims_large_event_buffers_without_dropping_latest_logs() {
+        let mut events = (0..6)
+            .map(|index| sample_event(index, format!("line {index}")))
+            .collect::<Vec<_>>();
+
+        trim_buffered_events(&mut events, 3);
+
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].message, "line 3");
+        assert_eq!(events[2].message, "line 5");
+    }
+
+    #[test]
+    fn merges_sustained_streaming_logs_into_shared_chunks() {
+        let events = vec![
+            sample_event(0, "boot line 1"),
+            sample_event(1, "boot line 2"),
+            sample_event(2, "boot line 3"),
+        ];
+
+        let chunks = build_stream_chunks(&events);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].lines.len(), 3);
+    }
+
+    #[test]
+    fn virtualizes_large_static_logs_to_an_overscanned_slice() {
+        let chunks = (0..400)
+            .map(|index| StreamChunk {
+                source: LogSource::Serial,
+                channel: LogChannel::Stdout,
+                level: LogLevel::Info,
+                started_at: Utc.timestamp_opt(index, 0).single().expect("valid start"),
+                ended_at: Utc.timestamp_opt(index, 0).single().expect("valid end"),
+                lines: vec![format!("line {index}")],
+            })
+            .collect::<Vec<_>>();
+
+        let window = compute_stream_window(&chunks, 12_000, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
+
+        assert!(window.start_index > 0);
+        assert!(window.end_index < chunks.len());
+        assert!(window.end_index - window.start_index < 40);
+        assert!(window.top_padding_px > 0);
+        assert!(window.bottom_padding_px > 0);
+    }
+
+    #[test]
+    fn keeps_small_chunk_sets_fully_rendered() {
+        let chunks = (0..4)
+            .map(|index| StreamChunk {
+                source: LogSource::Serial,
+                channel: LogChannel::Stdout,
+                level: LogLevel::Info,
+                started_at: Utc.timestamp_opt(index, 0).single().expect("valid start"),
+                ended_at: Utc.timestamp_opt(index, 0).single().expect("valid end"),
+                lines: vec![format!("line {index}")],
+            })
+            .collect::<Vec<_>>();
+
+        let window =
+            compute_stream_window(&chunks, 999_999, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
+
+        assert_eq!(window.start_index, 0);
+        assert_eq!(window.end_index, chunks.len());
+        assert_eq!(window.top_padding_px, 0);
+        assert_eq!(window.bottom_padding_px, 0);
+    }
+
+    #[test]
+    fn long_wrapped_lines_increase_estimated_chunk_height() {
+        let short = StreamChunk {
+            source: LogSource::Serial,
+            channel: LogChannel::Stdout,
+            level: LogLevel::Info,
+            started_at: Utc.timestamp_opt(0, 0).single().expect("valid start"),
+            ended_at: Utc.timestamp_opt(0, 0).single().expect("valid end"),
+            lines: vec!["short".into()],
+        };
+        let long = StreamChunk {
+            lines: vec!["x".repeat(STREAM_WRAP_WIDTH_CHARS * 3)],
+            ..short.clone()
+        };
+
+        assert!(estimate_stream_chunk_height(&long) > estimate_stream_chunk_height(&short));
     }
 }
