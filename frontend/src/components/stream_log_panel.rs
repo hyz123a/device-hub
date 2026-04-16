@@ -18,7 +18,7 @@ use crate::components::{
 const EVENT_PAGE_SIZE: usize = 50;
 const DEFAULT_BUFFERED_EVENTS: usize = 2_000;
 const MAX_BUFFERED_EVENTS: usize = 5_000;
-const RENDER_FLUSH_DELAY_MS: u32 = 80;
+const RENDER_FLUSH_DELAY_MS: u32 = 32;
 const STREAM_VIRTUALIZATION_MIN_CHUNKS: usize = 100;
 const STREAM_VIRTUALIZATION_OVERSCAN_PX: i32 = 480;
 const STREAM_CHUNK_BASE_HEIGHT_PX: i32 = 56;
@@ -26,7 +26,7 @@ const STREAM_CHUNK_LINE_HEIGHT_PX: i32 = 20;
 const STREAM_WRAP_WIDTH_CHARS: usize = 120;
 const STREAM_CHUNK_PLAIN_RENDER_LINE_THRESHOLD: usize = 160;
 const STREAM_CHUNK_PLAIN_RENDER_CHAR_THRESHOLD: usize = 32_000;
-const STREAM_TAIL_LOCK_THRESHOLD_PX: i32 = 0;
+const STREAM_TAIL_LOCK_THRESHOLD_PX: i32 = 64;
 
 struct WsBindings {
     socket: WebSocket,
@@ -151,28 +151,25 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         let current_page = current_page.clone();
         let pending_render = pending_render.clone();
         let connect_revision = props.connect_revision;
-        use_effect_with(
-            (connect_revision, initial_events.len()),
-            move |_| {
-                let mut store = event_store.borrow_mut();
-                let mut set = dedup_set.borrow_mut();
-                store.clear();
-                set.clear();
-                pending_render.borrow_mut().take();
-                for event in &initial_events {
-                    let hash = event_identity_hash(event);
-                    if set.insert(hash) {
-                        store.push(event.clone());
-                    }
+        use_effect_with((connect_revision, initial_events.len()), move |_| {
+            let mut store = event_store.borrow_mut();
+            let mut set = dedup_set.borrow_mut();
+            store.clear();
+            set.clear();
+            pending_render.borrow_mut().take();
+            for event in &initial_events {
+                let hash = event_identity_hash(event);
+                if set.insert(hash) {
+                    store.push(event.clone());
                 }
-                store.sort_by(|a, b| a.ts.cmp(&b.ts));
-                trim_buffered_events(&mut store, MAX_BUFFERED_EVENTS);
-                let visible = visible_buffered_events(&store, *buffered_event_limit);
-                events.set(visible);
-                current_page.set(0);
-                || {}
-            },
-        );
+            }
+            store.sort_by(|a, b| a.ts.cmp(&b.ts));
+            trim_buffered_events(&mut store, MAX_BUFFERED_EVENTS);
+            let visible = visible_buffered_events(&store, *buffered_event_limit);
+            events.set(visible);
+            current_page.set(0);
+            || {}
+        });
     }
 
     // WebSocket lifecycle
@@ -188,145 +185,131 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         let socket = socket.clone();
         let ws_url = props.ws_url.clone();
         let connect_revision = props.connect_revision;
-        use_effect_with(
-            (connect_revision, ws_url.clone()),
-            move |_| {
+        use_effect_with((connect_revision, ws_url.clone()), move |_| {
+            if let Some(existing) = socket.borrow_mut().take() {
+                let _ = existing.socket.close();
+            }
+
+            let set_connection = {
+                let internal_connection = internal_connection.clone();
+                let on_connection_change = on_connection_change.clone();
+                move |status: &str| {
+                    internal_connection.set(status.to_owned());
+                    on_connection_change.emit(status.to_owned());
+                }
+            };
+
+            if let Some(url) = ws_url {
+                set_connection("connecting");
+
+                match WebSocket::new(&url) {
+                    Ok(ws) => {
+                        let set_open = {
+                            let internal_connection = internal_connection.clone();
+                            let on_connection_change = on_connection_change.clone();
+                            move || {
+                                internal_connection.set("connected".to_owned());
+                                on_connection_change.emit("connected".to_owned());
+                            }
+                        };
+                        let on_open = Closure::wrap(Box::new(move |_event: Event| {
+                            set_open();
+                        })
+                            as Box<dyn FnMut(_)>);
+                        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+
+                        let message_events = events.clone();
+                        let message_store = event_store.clone();
+                        let message_dedup = dedup_set.clone();
+                        let message_error = on_error_cb.clone();
+                        let buffered_event_limit = buffered_event_limit.clone();
+                        let pending_render = pending_render.clone();
+                        let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
+                            if let Some(text) = event.data().as_string() {
+                                match serde_json::from_str::<LogEvent>(&text) {
+                                    Ok(log_event) => {
+                                        let hash = event_identity_hash(&log_event);
+                                        if !message_dedup.borrow_mut().insert(hash) {
+                                            return;
+                                        }
+                                        let mut next = message_store.borrow_mut();
+                                        next.push(log_event);
+                                        trim_buffered_events(&mut next, MAX_BUFFERED_EVENTS);
+                                        if pending_render.borrow().is_none() {
+                                            let message_events = message_events.clone();
+                                            let message_store = message_store.clone();
+                                            let buffered_event_limit = buffered_event_limit.clone();
+                                            let pending_render_for_timer = pending_render.clone();
+                                            let pending_render_for_callback =
+                                                pending_render.clone();
+                                            *pending_render_for_timer.borrow_mut() = Some(
+                                                Timeout::new(RENDER_FLUSH_DELAY_MS, move || {
+                                                    let snapshot = visible_buffered_events(
+                                                        message_store.borrow().as_slice(),
+                                                        *buffered_event_limit,
+                                                    );
+                                                    message_events.set(snapshot);
+                                                    pending_render_for_callback.borrow_mut().take();
+                                                }),
+                                            );
+                                        }
+                                    }
+                                    Err(parse_error) => {
+                                        message_error.emit(parse_error.to_string());
+                                    }
+                                }
+                            }
+                        })
+                            as Box<dyn FnMut(_)>);
+                        ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+
+                        let err_cb = on_error_cb.clone();
+                        let on_error = Closure::wrap(Box::new(move |_event: ErrorEvent| {
+                            err_cb.emit("websocket stream error".to_owned());
+                        })
+                            as Box<dyn FnMut(_)>);
+                        ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+
+                        let set_close = {
+                            let internal_connection = internal_connection.clone();
+                            let on_connection_change = on_connection_change.clone();
+                            move || {
+                                internal_connection.set("disconnected".to_owned());
+                                on_connection_change.emit("disconnected".to_owned());
+                            }
+                        };
+                        let on_close = Closure::wrap(Box::new(move |_event: Event| {
+                            set_close();
+                        })
+                            as Box<dyn FnMut(_)>);
+                        ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+
+                        *socket.borrow_mut() = Some(WsBindings {
+                            socket: ws,
+                            _on_open: on_open,
+                            _on_message: on_message,
+                            _on_error: on_error,
+                            _on_close: on_close,
+                        });
+                    }
+                    Err(_) => {
+                        set_connection("disconnected");
+                        on_error_cb.emit("failed to open websocket".to_owned());
+                    }
+                }
+            } else {
+                set_connection("disconnected");
+            }
+
+            let socket = socket.clone();
+            let pending_render = pending_render.clone();
+            move || {
+                pending_render.borrow_mut().take();
                 if let Some(existing) = socket.borrow_mut().take() {
                     let _ = existing.socket.close();
                 }
-
-                let set_connection = {
-                    let internal_connection = internal_connection.clone();
-                    let on_connection_change = on_connection_change.clone();
-                    move |status: &str| {
-                        internal_connection.set(status.to_owned());
-                        on_connection_change.emit(status.to_owned());
-                    }
-                };
-
-                if let Some(url) = ws_url {
-                    set_connection("connecting");
-
-                    match WebSocket::new(&url) {
-                        Ok(ws) => {
-                            let set_open = {
-                                let internal_connection = internal_connection.clone();
-                                let on_connection_change = on_connection_change.clone();
-                                move || {
-                                    internal_connection.set("connected".to_owned());
-                                    on_connection_change.emit("connected".to_owned());
-                                }
-                            };
-                            let on_open = Closure::wrap(Box::new(move |_event: Event| {
-                                set_open();
-                            }) as Box<dyn FnMut(_)>);
-                            ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-
-                            let message_events = events.clone();
-                            let message_store = event_store.clone();
-                            let message_dedup = dedup_set.clone();
-                            let message_error = on_error_cb.clone();
-                            let buffered_event_limit = buffered_event_limit.clone();
-                            let pending_render = pending_render.clone();
-                            let on_message =
-                                Closure::wrap(Box::new(move |event: MessageEvent| {
-                                    if let Some(text) = event.data().as_string() {
-                                        match serde_json::from_str::<LogEvent>(&text) {
-                                            Ok(log_event) => {
-                                                let hash = event_identity_hash(&log_event);
-                                                if !message_dedup.borrow_mut().insert(hash) {
-                                                    return;
-                                                }
-                                                let mut next = message_store.borrow_mut();
-                                                next.push(log_event);
-                                                trim_buffered_events(
-                                                    &mut next,
-                                                    MAX_BUFFERED_EVENTS,
-                                                );
-                                                if pending_render.borrow().is_none() {
-                                                    let message_events = message_events.clone();
-                                                    let message_store = message_store.clone();
-                                                    let buffered_event_limit =
-                                                        buffered_event_limit.clone();
-                                                    let pending_render_for_timer =
-                                                        pending_render.clone();
-                                                    let pending_render_for_callback =
-                                                        pending_render.clone();
-                                                    *pending_render_for_timer.borrow_mut() =
-                                                        Some(Timeout::new(
-                                                            RENDER_FLUSH_DELAY_MS,
-                                                            move || {
-                                                                let snapshot =
-                                                                    visible_buffered_events(
-                                                                        message_store
-                                                                            .borrow()
-                                                                            .as_slice(),
-                                                                        *buffered_event_limit,
-                                                                    );
-                                                                message_events.set(snapshot);
-                                                                pending_render_for_callback
-                                                                    .borrow_mut()
-                                                                    .take();
-                                                            },
-                                                        ));
-                                                }
-                                            }
-                                            Err(parse_error) => {
-                                                message_error.emit(parse_error.to_string());
-                                            }
-                                        }
-                                    }
-                                })
-                                    as Box<dyn FnMut(_)>);
-                            ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-
-                            let err_cb = on_error_cb.clone();
-                            let on_error =
-                                Closure::wrap(Box::new(move |_event: ErrorEvent| {
-                                    err_cb.emit("websocket stream error".to_owned());
-                                }) as Box<dyn FnMut(_)>);
-                            ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-
-                            let set_close = {
-                                let internal_connection = internal_connection.clone();
-                                let on_connection_change = on_connection_change.clone();
-                                move || {
-                                    internal_connection.set("disconnected".to_owned());
-                                    on_connection_change.emit("disconnected".to_owned());
-                                }
-                            };
-                            let on_close = Closure::wrap(Box::new(move |_event: Event| {
-                                set_close();
-                            }) as Box<dyn FnMut(_)>);
-                            ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-
-                            *socket.borrow_mut() = Some(WsBindings {
-                                socket: ws,
-                                _on_open: on_open,
-                                _on_message: on_message,
-                                _on_error: on_error,
-                                _on_close: on_close,
-                            });
-                        }
-                        Err(_) => {
-                            set_connection("disconnected");
-                            on_error_cb.emit("failed to open websocket".to_owned());
-                        }
-                    }
-                } else {
-                    set_connection("disconnected");
-                }
-
-                let socket = socket.clone();
-                let pending_render = pending_render.clone();
-                move || {
-                    pending_render.borrow_mut().take();
-                    if let Some(existing) = socket.borrow_mut().take() {
-                        let _ = existing.socket.close();
-                    }
-                }
-            },
-        );
+            }
+        });
     }
 
     // Buffer limit change
@@ -481,6 +464,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         Callback::from(move |_| f.set(StreamFilter::Structured))
     };
 
+    let pending_scroll_raf = use_mut_ref(|| Option::<i32>::None);
     let on_stream_scroll = {
         let stream_container_ref = stream_container_ref.clone();
         let follow_stream_tail = follow_stream_tail.clone();
@@ -489,20 +473,43 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         let last_stream_scroll_top = last_stream_scroll_top.clone();
         let displayed_stream_chunks = displayed_stream_chunks.clone();
         let stream_anchor = stream_anchor.clone();
+        let pending_scroll_raf = pending_scroll_raf.clone();
         Callback::from(move |_| {
-            if let Some(el) = stream_container_ref.cast::<HtmlElement>() {
-                let st = el.scroll_top();
-                *last_stream_scroll_top.borrow_mut() = st;
-                stream_scroll_top.set(st);
-                stream_viewport_height.set(el.client_height());
-                let at_tail = is_stream_scrolled_to_bottom(&el, STREAM_TAIL_LOCK_THRESHOLD_PX);
-                if at_tail {
-                    *stream_anchor.borrow_mut() = None;
-                } else {
-                    *stream_anchor.borrow_mut() =
-                        capture_stream_anchor(&displayed_stream_chunks, st);
+            if pending_scroll_raf.borrow().is_some() {
+                return;
+            }
+            let stream_container_ref = stream_container_ref.clone();
+            let follow_stream_tail = follow_stream_tail.clone();
+            let stream_scroll_top = stream_scroll_top.clone();
+            let stream_viewport_height = stream_viewport_height.clone();
+            let last_stream_scroll_top = last_stream_scroll_top.clone();
+            let displayed_stream_chunks = displayed_stream_chunks.clone();
+            let stream_anchor = stream_anchor.clone();
+            let raf_pending = pending_scroll_raf.clone();
+            let cb = Closure::once_into_js(move || {
+                *raf_pending.borrow_mut() = None;
+                if let Some(el) = stream_container_ref.cast::<HtmlElement>() {
+                    let st = el.scroll_top();
+                    *last_stream_scroll_top.borrow_mut() = st;
+                    stream_scroll_top.set(st);
+                    stream_viewport_height.set(el.client_height());
+                    let at_tail =
+                        is_stream_scrolled_to_bottom(&el, STREAM_TAIL_LOCK_THRESHOLD_PX);
+                    if at_tail {
+                        *stream_anchor.borrow_mut() = None;
+                    } else {
+                        *stream_anchor.borrow_mut() =
+                            capture_stream_anchor(&displayed_stream_chunks, st);
+                    }
+                    follow_stream_tail.set(at_tail);
                 }
-                follow_stream_tail.set(at_tail);
+            });
+            if let Some(w) = window() {
+                if let Ok(id) =
+                    w.request_animation_frame(cb.as_ref().unchecked_ref())
+                {
+                    *pending_scroll_raf.borrow_mut() = Some(id);
+                }
             }
         })
     };
@@ -1190,10 +1197,7 @@ fn has_active_text_selection() -> bool {
 }
 
 fn set_page_scroll_locked(locked: bool) {
-    if let Some(body) = window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.body())
-    {
+    if let Some(body) = window().and_then(|w| w.document()).and_then(|d| d.body()) {
         let style = body.style();
         if locked {
             let _ = style.set_property("overflow", "hidden");
@@ -1209,16 +1213,29 @@ fn set_page_scroll_locked(locked: bool) {
 
 fn connection_status_class(status: &str) -> &'static str {
     match status {
-        "connected" => "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong",
-        "connecting" => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
+        "connected" => {
+            "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong"
+        }
+        "connecting" => {
+            "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
+        }
         _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
     }
 }
 
 fn toggle_button_class(active: bool) -> Classes {
     classes!(
-        "rounded-full", "px-3", "py-1.5", "text-sm", "font-medium", "transition",
-        if active { "bg-accent text-white" } else { "text-ink-muted hover:text-ink" }
+        "rounded-full",
+        "px-3",
+        "py-1.5",
+        "text-sm",
+        "font-medium",
+        "transition",
+        if active {
+            "bg-accent text-white"
+        } else {
+            "text-ink-muted hover:text-ink"
+        }
     )
 }
 
@@ -1228,18 +1245,32 @@ fn filter_button_class(active: bool) -> Classes {
 
 fn stream_badge_class(channel: &LogChannel) -> &'static str {
     match channel {
-        LogChannel::Stdout => "inline-flex rounded-full bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-300",
-        LogChannel::Stderr => "inline-flex rounded-full bg-red-700/15 px-3 py-1.5 text-xs font-medium text-red-300",
-        LogChannel::System => "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-300",
+        LogChannel::Stdout => {
+            "inline-flex rounded-full bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-300"
+        }
+        LogChannel::Stderr => {
+            "inline-flex rounded-full bg-red-700/15 px-3 py-1.5 text-xs font-medium text-red-300"
+        }
+        LogChannel::System => {
+            "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-300"
+        }
     }
 }
 
 fn stream_level_class(level: &LogLevel) -> &'static str {
     match level {
-        LogLevel::Error => "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-300",
-        LogLevel::Warn => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-200",
-        LogLevel::Info => "inline-flex rounded-full bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-200",
-        LogLevel::Debug => "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-300",
+        LogLevel::Error => {
+            "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-300"
+        }
+        LogLevel::Warn => {
+            "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-200"
+        }
+        LogLevel::Info => {
+            "inline-flex rounded-full bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-200"
+        }
+        LogLevel::Debug => {
+            "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-300"
+        }
     }
 }
 
@@ -1325,8 +1356,7 @@ mod tests {
                 lines: vec![format!("line {i}")],
             })
             .collect();
-        let window =
-            compute_stream_window(&chunks, 12_000, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
+        let window = compute_stream_window(&chunks, 12_000, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
         assert!(window.start_index > 0);
         assert!(window.end_index < chunks.len());
         assert!(window.end_index - window.start_index < 40);
