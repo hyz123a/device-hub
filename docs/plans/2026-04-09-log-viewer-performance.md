@@ -12,3 +12,5 @@
 - Added chunk-window virtualization with top and bottom spacers so stream mode renders only the overscanned viewport slice.
 - Kept scroll tracking explicit and froze viewport anchoring while the page has an active text selection.
 - Added unit tests that cover large static logs, sustained streaming merges, and the new buffer/window sizing behavior.
+- Extracted `StreamLogPanel` component from `LogViewer` to improve code organization and reusability.
+- Added `Dockerfile` for containerized deployment.

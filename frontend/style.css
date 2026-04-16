@@ -577,6 +577,10 @@ a {
   text-decoration-line: none;
 }
 
+.visible {
+  visibility: visible;
+}
+
 .static {
   position: static;
 }
