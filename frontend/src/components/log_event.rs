@@ -104,19 +104,29 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
 
 pub(crate) fn render_log_message(message: &str, fallback_class: Option<&'static str>) -> Html {
     let message_meta = analyze_message(message);
-    let message_segments = parse_ansi_segments(message);
-    let body_segments =
-        strip_ansi_segments_prefix(&message_segments, message_meta.prefix_chars_to_strip);
-
-    if message_meta.prefer_ansi_render {
-        render_ansi_segments(&body_segments)
-    } else {
-        html! {
+    if !message_meta.prefer_ansi_render {
+        return html! {
             <span class={fallback_class.unwrap_or(detected_body_class(message_meta.level_hint))}>
                 {message_meta.body}
             </span>
-        }
+        };
     }
+
+    let message_segments = parse_ansi_segments(message);
+    let body_segments =
+        strip_ansi_segments_prefix(&message_segments, message_meta.prefix_chars_to_strip);
+    render_ansi_segments(&body_segments)
+}
+
+pub(crate) fn plain_log_text(message: &str) -> String {
+    if !contains_ansi_escape(message) {
+        return message.to_owned();
+    }
+
+    parse_ansi_segments(message)
+        .into_iter()
+        .map(|segment| segment.text)
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -297,14 +307,19 @@ fn detected_body_class(level: Option<DetectedLevel>) -> &'static str {
 }
 
 fn analyze_message(message: &str) -> MessageMeta {
-    let segments = parse_ansi_segments(message);
-    let plain = segments
-        .iter()
-        .map(|segment| segment.text.as_str())
-        .collect::<String>();
-    let prefer_ansi_render = segments
-        .iter()
-        .any(|segment| segment.style != AnsiStyle::default());
+    let (plain, prefer_ansi_render) = if contains_ansi_escape(message) {
+        let segments = parse_ansi_segments(message);
+        let plain = segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<String>();
+        let prefer_ansi_render = segments
+            .iter()
+            .any(|segment| segment.style != AnsiStyle::default());
+        (plain, prefer_ansi_render)
+    } else {
+        (message.to_owned(), false)
+    };
     let trimmed = plain.trim();
     let leading_trim_chars = plain.chars().take_while(|ch| ch.is_whitespace()).count();
 
@@ -329,6 +344,10 @@ fn analyze_message(message: &str) -> MessageMeta {
         prefix_chars_to_strip,
         prefer_ansi_render,
     }
+}
+
+fn contains_ansi_escape(message: &str) -> bool {
+    message.as_bytes().contains(&0x1b)
 }
 
 fn parse_ansi_segments(message: &str) -> Vec<AnsiSegment> {
@@ -586,5 +605,11 @@ mod tests {
 
         assert_eq!(meta.level_hint, Some(DetectedLevel::Info));
         assert_eq!(body, "boot completed");
+    }
+
+    #[test]
+    fn plain_log_text_strips_ansi_sequences() {
+        assert_eq!(plain_log_text("\u{1b}[33mWARN\u{1b}[0m ok"), "WARN ok");
+        assert_eq!(plain_log_text("plain text"), "plain text");
     }
 }

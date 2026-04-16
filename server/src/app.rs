@@ -111,7 +111,7 @@ async fn build_router_with_components(
         artifacts_dir,
     } = config;
     let artifacts = ArtifactStore::new(artifacts_dir.unwrap_or_else(|| ".artifacts".into()));
-    let events = EventBus::new(1_000, Some(artifacts.clone()));
+    let events = EventBus::new(5_000, Some(artifacts.clone()));
     let devices = Arc::new(
         DeviceRegistry::new(configured_devices, device_registry_path.map(PathBuf::from))
             .expect("failed to initialize device registry"),

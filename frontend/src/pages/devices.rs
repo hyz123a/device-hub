@@ -757,11 +757,13 @@ pub fn devices_page() -> Html {
                                                                 class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
                                                                 onchange={on_serial_scan_select}
                                                                 disabled={is_submitting}
-                                                                value={selected_serial_scan.clone()}
                                                             >
-                                                                <option value="">{"Keep manual entry"}</option>
-                                                                { for ports.iter().map(|port| html! {
-                                                                    <option value={port.path.clone()}>{format_serial_port_option(port)}</option>
+                                                                <option value="" selected={selected_serial_scan.is_empty()}>{"Keep manual entry"}</option>
+                                                                { for ports.iter().map(|port| {
+                                                                    let is_selected = selected_serial_scan == port.path;
+                                                                    html! {
+                                                                        <option value={port.path.clone()} selected={is_selected}>{format_serial_port_option(port)}</option>
+                                                                    }
                                                                 }) }
                                                             </select>
                                                         </label>
@@ -816,11 +818,13 @@ pub fn devices_page() -> Html {
                                                                 class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
                                                                 onchange={on_jlink_scan_select}
                                                                 disabled={is_submitting}
-                                                                value={selected_jlink_scan.clone()}
                                                             >
-                                                                <option value="">{"Keep manual entry"}</option>
-                                                                { for probes.iter().map(|probe| html! {
-                                                                    <option value={probe.serial.clone()}>{format_jlink_probe_option(probe)}</option>
+                                                                <option value="" selected={selected_jlink_scan.is_empty()}>{"Keep manual entry"}</option>
+                                                                { for probes.iter().map(|probe| {
+                                                                    let is_selected = selected_jlink_scan == probe.serial;
+                                                                    html! {
+                                                                        <option value={probe.serial.clone()} selected={is_selected}>{format_jlink_probe_option(probe)}</option>
+                                                                    }
                                                                 }) }
                                                             </select>
                                                         </label>
@@ -841,11 +845,13 @@ pub fn devices_page() -> Html {
                                                             class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
                                                             onchange={on_jlink_board_profile_select}
                                                             disabled={is_submitting}
-                                                            value={selected_jlink_board_profile.clone()}
                                                         >
-                                                            <option value="">{"Custom / manual"}</option>
-                                                            { for profiles.iter().map(|profile| html! {
-                                                                <option value={profile.id.clone()}>{format_jlink_board_profile_option(profile)}</option>
+                                                            <option value="" selected={selected_jlink_board_profile.is_empty()}>{"Custom / manual"}</option>
+                                                            { for profiles.iter().map(|profile| {
+                                                                let is_selected = selected_jlink_board_profile == profile.id;
+                                                                html! {
+                                                                    <option value={profile.id.clone()} selected={is_selected}>{format_jlink_board_profile_option(profile)}</option>
+                                                                }
                                                             }) }
                                                         </select>
                                                     </label>
