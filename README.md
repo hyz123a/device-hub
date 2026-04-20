@@ -81,6 +81,7 @@ devices:
       host: 192.168.110.151
       user: root
       key: /home/hyz/.ssh/id_rsa
+      default_log_path: /tmp/sdcard/debug_log
     serial:
       port: /dev/ttyUSB0
       baud: 115200
@@ -110,6 +111,12 @@ curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.exec \
   -H 'content-type: application/json' \
   -d '{"payload":"uname -a"}'
 ```
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.tail
+```
+
+When the device has `ssh.default_log_path` configured, `ssh.tail` can omit the payload and uses that default path. Supplying a payload still overrides the device default for that job.
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.write \

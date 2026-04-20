@@ -95,8 +95,12 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
     };
 
     let status_class = match connection.as_str() {
-        "connected" => "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong",
-        "connecting" => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
+        "connected" => {
+            "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong"
+        }
+        "connecting" => {
+            "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
+        }
         _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
     };
 
@@ -124,9 +128,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                         rerun_pending.set(false);
                         error.set(None);
                         if let Some(nav) = navigator {
-                            nav.push(&Route::JobDetail {
-                                job_id: new_job.id,
-                            });
+                            nav.push(&Route::JobDetail { job_id: new_job.id });
                         }
                     }
                     Err(message) => {
@@ -230,10 +232,18 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
 
 fn job_status_class(status: &JobStatus) -> &'static str {
     match status {
-        JobStatus::Succeeded => "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong",
-        JobStatus::Failed => "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700",
-        JobStatus::Cancelled => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
-        JobStatus::Pending | JobStatus::Running => "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800",
+        JobStatus::Succeeded => {
+            "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong"
+        }
+        JobStatus::Failed => {
+            "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700"
+        }
+        JobStatus::Cancelled => {
+            "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted"
+        }
+        JobStatus::Pending | JobStatus::Running => {
+            "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
+        }
     }
 }
 

@@ -117,7 +117,7 @@ impl AppUseCases {
     ) -> Result<Job, AppError> {
         let device = self.get_device(device_id)?;
         validate_action(&action, &device)?;
-        validate_payload(&action, payload.as_ref())?;
+        validate_payload(&action, &device, payload.as_ref())?;
         self.job_manager.start(device, action, payload).await
     }
 
@@ -192,6 +192,11 @@ fn validate_device(device: &Device) -> Result<(), AppError> {
                 "ssh config requires host, user, and key".into(),
             ));
         }
+        if ssh.default_log_path.trim().is_empty() {
+            return Err(AppError::BadRequest(
+                "ssh config requires default_log_path".into(),
+            ));
+        }
     }
 
     if let Some(serial) = &device.serial {
@@ -248,16 +253,29 @@ fn validate_action(action: &str, device: &Device) -> Result<(), AppError> {
     }
 }
 
-fn validate_payload(action: &str, payload: Option<&ActionRequest>) -> Result<(), AppError> {
+fn validate_payload(
+    action: &str,
+    device: &Device,
+    payload: Option<&ActionRequest>,
+) -> Result<(), AppError> {
     let value = payload.and_then(|request| request.payload.as_ref());
 
     match action {
         "ssh.exec" if value.is_none_or(|command| command.trim().is_empty()) => Err(
             AppError::BadRequest("action `ssh.exec` requires a command payload".into()),
         ),
-        "ssh.tail" if value.is_none_or(|path| path.trim().is_empty()) => Err(AppError::BadRequest(
-            "action `ssh.tail` requires a log path payload".into(),
-        )),
+        "ssh.tail"
+            if value.is_none_or(|path| path.trim().is_empty())
+                && device
+                    .ssh
+                    .as_ref()
+                    .is_none_or(|ssh| ssh.default_log_path.trim().is_empty()) =>
+        {
+            Err(AppError::BadRequest(
+                "action `ssh.tail` requires a log path payload or device ssh.default_log_path"
+                    .into(),
+            ))
+        }
         "serial.write" if value.is_none_or(|input| input.is_empty()) => Err(AppError::BadRequest(
             "action `serial.write` requires a payload".into(),
         )),

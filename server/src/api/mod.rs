@@ -385,7 +385,15 @@ fn build_job_summary(
         "ssh.tail" => job
             .payload
             .as_ref()
-            .map(|payload| format!("path: {payload}")),
+            .map(|payload| format!("path: {payload}"))
+            .or_else(|| {
+                device.and_then(|device| {
+                    device
+                        .ssh
+                        .as_ref()
+                        .map(|ssh| format!("path: {}", ssh.default_log_path))
+                })
+            }),
         "serial.tail" => device.and_then(|device| {
             device
                 .serial

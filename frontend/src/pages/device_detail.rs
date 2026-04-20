@@ -90,6 +90,12 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                         let exec_command_value = (*exec_command).clone();
                         let tail_path_value = (*tail_path).clone();
                         let device_id = detail.device.id.clone();
+                        let default_ssh_log_path = detail
+                            .device
+                            .ssh
+                            .as_ref()
+                            .map(|ssh| ssh.default_log_path.clone())
+                            .unwrap_or_default();
                         let pending_action_value = (*pending_action).clone();
                         let running_ssh_tail_value = (*running_ssh_tail).clone();
                         let device_logs_route = Route::DeviceLogs {
@@ -153,6 +159,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                             Callback::from(move |_| {
                                 let device_id = device_id.clone();
                                 let path = (*tail_path).trim().to_owned();
+                                let payload = (!path.is_empty()).then_some(path);
                                 let error = error.clone();
                                 let pending_action = pending_action.clone();
                                 let navigator = navigator.clone();
@@ -168,7 +175,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                     let result = if let Some(active_job) = active_job {
                                         api::cancel_job(&active_job.id).await
                                     } else {
-                                        api::start_action(&device_id, "ssh.tail", Some(path)).await
+                                        api::start_action(&device_id, "ssh.tail", payload).await
                                     };
 
                                     match result {
@@ -247,8 +254,9 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                             class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
                                             value={tail_path_value}
                                             oninput={on_tail_input}
-                                            placeholder="/tmp/sdcard/bstationd.log"
+                                            placeholder={default_ssh_log_path.clone()}
                                         />
+                                        <span>{format!("Leave empty to use the device default log path: {default_ssh_log_path}")}</span>
                                     </label>
                                     <div class="flex flex-wrap justify-end gap-3">
                                         {

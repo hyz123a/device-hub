@@ -16,14 +16,14 @@ use crate::components::{
 };
 
 const EVENT_PAGE_SIZE: usize = 50;
-const DEFAULT_BUFFERED_EVENTS: usize = 2_000;
+const DEFAULT_BUFFERED_EVENTS: usize = 5_000;
 const MAX_BUFFERED_EVENTS: usize = 5_000;
 const RENDER_FLUSH_DELAY_MS: u32 = 32;
 const STREAM_VIRTUALIZATION_MIN_CHUNKS: usize = 100;
-const STREAM_VIRTUALIZATION_OVERSCAN_PX: i32 = 480;
+const STREAM_VIRTUALIZATION_OVERSCAN_PX: i32 = 720;
 const STREAM_CHUNK_BASE_HEIGHT_PX: i32 = 56;
 const STREAM_CHUNK_LINE_HEIGHT_PX: i32 = 20;
-const STREAM_WRAP_WIDTH_CHARS: usize = 120;
+const STREAM_WRAP_WIDTH_CHARS: usize = 80;
 const STREAM_CHUNK_PLAIN_RENDER_LINE_THRESHOLD: usize = 160;
 const STREAM_CHUNK_PLAIN_RENDER_CHAR_THRESHOLD: usize = 32_000;
 const STREAM_TAIL_LOCK_THRESHOLD_PX: i32 = 64;
@@ -444,9 +444,19 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
             follow_stream_tail.set(true);
             *stream_anchor.borrow_mut() = None;
             if let Some(el) = stream_container_ref.cast::<HtmlElement>() {
-                el.set_scroll_top(el.scroll_height());
-                *last_stream_scroll_top.borrow_mut() = el.scroll_top();
-                stream_scroll_top.set(el.scroll_top());
+                let scroll_top = scroll_stream_to_bottom(&el);
+                *last_stream_scroll_top.borrow_mut() = scroll_top;
+                stream_scroll_top.set(scroll_top);
+                if let Some(w) = window() {
+                    let stream_scroll_top = stream_scroll_top.clone();
+                    let last_stream_scroll_top = last_stream_scroll_top.clone();
+                    let cb = Closure::once_into_js(move || {
+                        let scroll_top = scroll_stream_to_bottom(&el);
+                        *last_stream_scroll_top.borrow_mut() = scroll_top;
+                        stream_scroll_top.set(scroll_top);
+                    });
+                    let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
+                }
             }
         })
     };
@@ -475,6 +485,18 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         let stream_anchor = stream_anchor.clone();
         let pending_scroll_raf = pending_scroll_raf.clone();
         Callback::from(move |_| {
+            if let Some(el) = stream_container_ref.cast::<HtmlElement>() {
+                let st = el.scroll_top();
+                *last_stream_scroll_top.borrow_mut() = st;
+                let at_tail = is_stream_scrolled_to_bottom(&el, STREAM_TAIL_LOCK_THRESHOLD_PX);
+                if at_tail {
+                    *stream_anchor.borrow_mut() = None;
+                } else {
+                    *stream_anchor.borrow_mut() =
+                        capture_stream_anchor(&displayed_stream_chunks, st);
+                }
+                follow_stream_tail.set(at_tail);
+            }
             if pending_scroll_raf.borrow().is_some() {
                 return;
             }
@@ -493,8 +515,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                     *last_stream_scroll_top.borrow_mut() = st;
                     stream_scroll_top.set(st);
                     stream_viewport_height.set(el.client_height());
-                    let at_tail =
-                        is_stream_scrolled_to_bottom(&el, STREAM_TAIL_LOCK_THRESHOLD_PX);
+                    let at_tail = is_stream_scrolled_to_bottom(&el, STREAM_TAIL_LOCK_THRESHOLD_PX);
                     if at_tail {
                         *stream_anchor.borrow_mut() = None;
                     } else {
@@ -505,9 +526,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                 }
             });
             if let Some(w) = window() {
-                if let Ok(id) =
-                    w.request_animation_frame(cb.as_ref().unchecked_ref())
-                {
+                if let Ok(id) = w.request_animation_frame(cb.as_ref().unchecked_ref()) {
                     *pending_scroll_raf.borrow_mut() = Some(id);
                 }
             }
@@ -561,9 +580,19 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                             stream_scroll_top.set(el.scroll_top());
                         } else if *follow_stream_tail {
                             *stream_anchor.borrow_mut() = None;
-                            el.set_scroll_top(el.scroll_height());
-                            *last_stream_scroll_top.borrow_mut() = el.scroll_top();
-                            stream_scroll_top.set(el.scroll_top());
+                            let scroll_top = scroll_stream_to_bottom(&el);
+                            *last_stream_scroll_top.borrow_mut() = scroll_top;
+                            stream_scroll_top.set(scroll_top);
+                            if let Some(w) = window() {
+                                let stream_scroll_top = stream_scroll_top.clone();
+                                let last_stream_scroll_top = last_stream_scroll_top.clone();
+                                let cb = Closure::once_into_js(move || {
+                                    let scroll_top = scroll_stream_to_bottom(&el);
+                                    *last_stream_scroll_top.borrow_mut() = scroll_top;
+                                    stream_scroll_top.set(scroll_top);
+                                });
+                                let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
+                            }
                         } else {
                             let restored = stream_anchor
                                 .borrow()
@@ -820,6 +849,11 @@ fn event_identity_hash(event: &LogEvent) -> u64 {
 fn is_stream_scrolled_to_bottom(element: &HtmlElement, threshold_px: i32) -> bool {
     let distance = element.scroll_height() - element.scroll_top() - element.client_height();
     distance <= threshold_px.max(0)
+}
+
+fn scroll_stream_to_bottom(element: &HtmlElement) -> i32 {
+    element.set_scroll_top(element.scroll_height());
+    element.scroll_top()
 }
 
 pub(crate) fn matches_search_query(event: &LogEvent, query: &str) -> bool {

@@ -219,7 +219,8 @@ async fn execute_ssh_tail(
     let path = payload
         .and_then(|request| request.payload.as_ref())
         .map(|value| value.trim())
-        .unwrap_or_default();
+        .filter(|value| !value.is_empty())
+        .unwrap_or(config.default_log_path.trim());
 
     context.events.publish(adapter_event(
         job,

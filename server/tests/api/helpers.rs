@@ -333,6 +333,7 @@ fn test_config() -> AppConfig {
                     host: "192.168.1.100".into(),
                     user: "root".into(),
                     key: "~/.ssh/id_rsa".into(),
+                    default_log_path: "/tmp/sdcard/debug_log".into(),
                 }),
                 serial: Some(SerialConfig {
                     port: "/dev/ttyUSB0".into(),
@@ -347,6 +348,7 @@ fn test_config() -> AppConfig {
                     host: "192.168.1.102".into(),
                     user: "root".into(),
                     key: "~/.ssh/id_lab".into(),
+                    default_log_path: "/tmp/sdcard/debug_log".into(),
                 }),
                 serial: Some(SerialConfig {
                     port: "/dev/ttyUSB1".into(),

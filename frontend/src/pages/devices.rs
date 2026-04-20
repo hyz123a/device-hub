@@ -6,7 +6,7 @@ use yew_router::prelude::Link;
 use crate::{api, app::Route};
 use device_hub_shared::{
     BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig, SerialConfig,
-    SshConfig,
+    SshConfig, default_ssh_log_path,
 };
 
 #[derive(Clone, PartialEq)]
@@ -17,6 +17,7 @@ struct DeviceDraft {
     ssh_host: String,
     ssh_user: String,
     ssh_key: String,
+    ssh_default_log_path: String,
     serial_enabled: bool,
     serial_port: String,
     serial_baud: String,
@@ -38,6 +39,7 @@ impl Default for DeviceDraft {
             ssh_host: String::new(),
             ssh_user: String::new(),
             ssh_key: String::new(),
+            ssh_default_log_path: default_ssh_log_path(),
             serial_enabled: false,
             serial_port: String::new(),
             serial_baud: "115200".into(),
@@ -65,6 +67,7 @@ impl DeviceDraft {
             draft.ssh_host = ssh.host.clone();
             draft.ssh_user = ssh.user.clone();
             draft.ssh_key = ssh.key.clone();
+            draft.ssh_default_log_path = ssh.default_log_path.clone();
         }
         if let Some(serial) = &device.serial {
             draft.serial_enabled = true;
@@ -100,10 +103,23 @@ impl DeviceDraft {
             let host = self.ssh_host.trim().to_owned();
             let user = self.ssh_user.trim().to_owned();
             let key = self.ssh_key.trim().to_owned();
+            let default_log_path = {
+                let value = self.ssh_default_log_path.trim();
+                if value.is_empty() {
+                    default_ssh_log_path()
+                } else {
+                    value.to_owned()
+                }
+            };
             if host.is_empty() || user.is_empty() || key.is_empty() {
                 return Err("SSH config requires host, user, and key".into());
             }
-            Some(SshConfig { host, user, key })
+            Some(SshConfig {
+                host,
+                user,
+                key,
+                default_log_path,
+            })
         } else {
             None
         };
@@ -294,6 +310,13 @@ pub fn devices_page() -> Html {
         Callback::from(move |event: InputEvent| {
             let value = event.target_unchecked_into::<HtmlInputElement>().value();
             update_draft(&draft, move |next| next.ssh_key = value);
+        })
+    };
+    let on_ssh_default_log_path_input = {
+        let draft = draft.clone();
+        Callback::from(move |event: InputEvent| {
+            let value = event.target_unchecked_into::<HtmlInputElement>().value();
+            update_draft(&draft, move |next| next.ssh_default_log_path = value);
         })
     };
     let on_serial_enabled = {
@@ -712,14 +735,15 @@ pub fn devices_page() -> Html {
                         {
                             if draft_value.ssh_enabled {
                                 html! {
-                                    <div class="grid gap-3">
-                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_host.clone()} oninput={on_ssh_host_input} disabled={is_submitting} placeholder="192.168.1.100" />
-                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_user.clone()} oninput={on_ssh_user_input} disabled={is_submitting} placeholder="root" />
-                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_key.clone()} oninput={on_ssh_key_input} disabled={is_submitting} placeholder="~/.ssh/id_rsa" />
-                                    </div>
-                                }
-                            } else {
-                                html! { <p class="m-0 text-sm text-ink-muted">{"Skip SSH if the target only needs serial and probe control."}</p> }
+                                     <div class="grid gap-3">
+                                         <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_host.clone()} oninput={on_ssh_host_input} disabled={is_submitting} placeholder="192.168.1.100" />
+                                         <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_user.clone()} oninput={on_ssh_user_input} disabled={is_submitting} placeholder="root" />
+                                         <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_key.clone()} oninput={on_ssh_key_input} disabled={is_submitting} placeholder="~/.ssh/id_rsa" />
+                                         <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_default_log_path.clone()} oninput={on_ssh_default_log_path_input} disabled={is_submitting} placeholder="/tmp/sdcard/debug_log" />
+                                     </div>
+                                 }
+                             } else {
+                                 html! { <p class="m-0 text-sm text-ink-muted">{"Skip SSH if the target only needs serial and probe control."}</p> }
                             }
                         }
                     </div>
@@ -1062,6 +1086,18 @@ fn confirm_delete(device_id: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn ssh_ready_draft() -> DeviceDraft {
+        DeviceDraft {
+            id: "board-alpha".into(),
+            label: "Linux Board".into(),
+            ssh_enabled: true,
+            ssh_host: "192.168.1.100".into(),
+            ssh_user: "root".into(),
+            ssh_key: "~/.ssh/id_rsa".into(),
+            ..DeviceDraft::default()
+        }
+    }
+
     fn serial_ready_draft() -> DeviceDraft {
         DeviceDraft {
             id: "board-gamma".into(),
@@ -1216,5 +1252,29 @@ mod tests {
         assert_eq!(draft.jlink_device, "");
         assert_eq!(draft.jlink_interface, "SWD");
         assert_eq!(draft.jlink_speed_khz, "4000");
+    }
+
+    #[test]
+    fn ssh_devices_default_log_path_when_field_is_blank() {
+        let mut draft = ssh_ready_draft();
+        draft.ssh_default_log_path.clear();
+
+        let device = draft.to_device().expect("ssh device");
+        assert_eq!(
+            device.ssh.expect("ssh config").default_log_path,
+            "/tmp/sdcard/debug_log"
+        );
+    }
+
+    #[test]
+    fn ssh_devices_preserve_custom_default_log_path() {
+        let mut draft = ssh_ready_draft();
+        draft.ssh_default_log_path = "/var/log/custom.log".into();
+
+        let device = draft.to_device().expect("ssh device");
+        assert_eq!(
+            device.ssh.expect("ssh config").default_log_path,
+            "/var/log/custom.log"
+        );
     }
 }

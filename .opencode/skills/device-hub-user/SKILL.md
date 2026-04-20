@@ -46,7 +46,7 @@ curl -s http://127.0.0.1:3000/api/devices
 3. Inspect one device
 
 ```bash
-curl -s http://127.0.0.1:3000/api/devices
+curl -s http://127.0.0.1:3000/api/devices/<device-id>
 ```
 
 4. Start an action
@@ -61,6 +61,8 @@ curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.exec \
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.tail \
   -H 'content-type: application/json' \
   -d '{"payload":"/var/log/syslog"}'
+
+curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.tail
 
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.tail \
   -H 'content-type: application/json' \
@@ -121,7 +123,7 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 4. For actions that require payloads, confirm or infer the exact payload:
 
 - `ssh.exec` requires a command string.
-- `ssh.tail` requires a log path.
+- `ssh.tail` uses the provided log path, or falls back to the device `ssh.default_log_path` when omitted.
 - `serial.tail` does not require a payload.
 - `serial.write` requires a payload string.
 - `serial.write` payloads may be raw text, newline-terminated commands, or control characters like Ctrl-C.
@@ -167,7 +169,8 @@ Next: <useful next step or none>
 ## Guardrails
 
 - Do not claim a device supports an action unless the API/config confirms it.
-- Do not invent payloads for `ssh.exec`, `ssh.tail`, or `serial.write`; ask one short question if the value is missing.
+- Do not invent payloads for `ssh.exec` or `serial.write`; ask one short question if the value is missing.
+- For `ssh.tail`, ask only when the payload is missing and the device does not have `ssh.default_log_path` configured.
 - Prefer using the rerun endpoint for repeat attempts so the same stored inputs are reused.
 - If the backend is down, say so clearly and help restart or diagnose it before issuing device commands.
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
