@@ -39,6 +39,8 @@ pub struct SshConfig {
     pub host: String,
     pub user: String,
     pub key: String,
+    #[serde(default = "default_ssh_log_path")]
+    pub default_log_path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,4 +84,27 @@ fn default_jlink_speed_khz() -> u32 {
 
 fn default_jlink_autoconnect() -> bool {
     true
+}
+
+pub fn default_ssh_log_path() -> String {
+    "/tmp/sdcard/debug_log".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssh_config_defaults_log_path_when_missing_from_payload() {
+        let config: SshConfig = serde_json::from_str(
+            r#"{
+                "host":"192.168.1.100",
+                "user":"root",
+                "key":"~/.ssh/id_rsa"
+            }"#,
+        )
+        .expect("ssh config json");
+
+        assert_eq!(config.default_log_path, "/tmp/sdcard/debug_log");
+    }
 }

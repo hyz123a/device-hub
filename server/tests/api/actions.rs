@@ -78,17 +78,16 @@ async fn start_action_rejects_missing_payload_for_ssh_exec() {
 }
 
 #[tokio::test]
-async fn start_action_rejects_missing_payload_for_ssh_tail() {
+async fn start_action_allows_missing_payload_for_ssh_tail_when_device_has_default_log_path() {
     let app = spawn_app().await;
 
     let response = app.post_action("board-alpha", "ssh.tail", None).await;
 
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-    let body: serde_json::Value = response.json().await.expect("invalid error body");
-    assert_eq!(
-        body["error"],
-        "bad request: action `ssh.tail` requires a log path payload"
-    );
+    assert!(response.status().is_success());
+    let job: Job = response.json().await.expect("invalid job json");
+    assert_eq!(job.device_id, "board-alpha");
+    assert_eq!(job.action, "ssh.tail");
+    assert_eq!(job.payload, None);
 }
 
 #[tokio::test]

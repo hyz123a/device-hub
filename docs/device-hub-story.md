@@ -60,8 +60,9 @@ Device Hub is:
 3. AI calls Device Hub to flash firmware, reset the target, and start logs
 4. AI runs harness steps through SSH or other adapters
 5. Device Hub streams structured logs, status, and artifacts back
-6. AI analyzes failure evidence and revises the harness
-7. **the loop repeats until the harness stabilizes**
+6. Device-specific recovery or workflow details are supplied through skill templates instead of being hard-coded into the core product
+7. AI analyzes failure evidence and revises the harness
+8. **the loop repeats until the harness stabilizes**
 
 ## MVP Scope
 
@@ -107,6 +108,7 @@ Device Hub directly addresses those gaps.
 - AI-safe: **avoid raw unrestricted shell as the primary abstraction**
 - bounded execution: jobs must time out and clean up safely when they fail or are cancelled
 - incrementally extensible: start with SSH and generic J-Link, add more adapters later
+- keep device-specific workflows in reusable skill templates so the core product stays focused on execution, logs, evidence, and reruns
 
 ## Future Direction
 
@@ -114,6 +116,7 @@ Once the MVP works, Device Hub can expand into:
 
 - richer harness asset management
 - reusable test workflows
+- device-specific skill templates that capture per-board recovery, deploy, and log-inspection conventions
 - RTT log integration
 - multi-device orchestration
 - CI and remote lab execution

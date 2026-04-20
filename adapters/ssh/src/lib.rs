@@ -312,6 +312,7 @@ mod tests {
             host: "board.local".into(),
             user: "root".into(),
             key: key.into(),
+            default_log_path: "/tmp/sdcard/debug_log".into(),
         }
     }
 

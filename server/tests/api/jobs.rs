@@ -62,6 +62,7 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                     host: "192.168.1.100".into(),
                     user: "root".into(),
                     key,
+                    default_log_path: "/tmp/sdcard/debug_log".into(),
                 }),
                 serial: None,
                 jlink: None,
@@ -84,6 +85,7 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                     host: "192.168.1.100".into(),
                     user: "root".into(),
                     key: key.clone(),
+                    default_log_path: "/tmp/sdcard/debug_log".into(),
                 }),
                 serial: None,
                 jlink: None,
@@ -95,6 +97,7 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                     host: "192.168.1.102".into(),
                     user: "root".into(),
                     key,
+                    default_log_path: "/tmp/sdcard/debug_log".into(),
                 }),
                 serial: None,
                 jlink: Some(JlinkConfig {
@@ -793,6 +796,37 @@ async fn ssh_tail_streams_events_until_cancelled() {
     assert!(response.status().is_success());
     let cancelled: Job = response.json().await.expect("invalid cancelled job json");
     assert_eq!(cancelled.status, JobStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn ssh_tail_without_payload_uses_device_default_log_path() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "printf 'boot log line\n'\nprintf 'tail warning\n' >&2\nsleep 5",
+    );
+    let app = spawn_app_with_config(ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let created: Job = app
+        .post_action("board-alpha", "ssh.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+
+    let events = wait_for_job_events(&app, &created.id, 3).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message == "tailing logs from /tmp/sdcard/debug_log")
+    );
+
+    let response = app.cancel_job(&created.id).await;
+    assert!(response.status().is_success());
 }
 
 #[tokio::test]
