@@ -563,6 +563,9 @@ pub fn devices_page() -> Html {
                                 html! {
                                     for list.into_iter().map(|device| {
                                         let route = Route::DeviceDetail { device_id: device.id.clone() };
+                                        let logs_route = Route::DeviceLogs {
+                                            device_id: device.id.clone(),
+                                        };
                                         let edit_draft = draft.clone();
                                         let edit_device_id = editing_device_id.clone();
                                         let edit_form_error = form_error.clone();
@@ -665,6 +668,10 @@ pub fn devices_page() -> Html {
                                                         onclick={on_delete}
                                                         disabled={is_submitting}
                                                     >{"Remove"}</button>
+                                                    <Link<Route>
+                                                        classes="text-sm font-medium text-accent-strong transition hover:text-accent"
+                                                        to={logs_route}
+                                                    >{"Logs"}</Link<Route>>
                                                     <Link<Route>
                                                         classes="text-sm font-medium text-accent-strong transition hover:text-accent"
                                                         to={route}

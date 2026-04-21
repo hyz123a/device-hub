@@ -11,7 +11,7 @@ use web_sys::{
 use yew::prelude::*;
 
 use crate::components::{
-    log_event::{LogEventCard, plain_log_text, render_log_message},
+    log_event::{LogEventCard, plain_log_text, render_log_message, visible_log_text},
     serial_write_panel::SerialWritePanel,
 };
 
@@ -19,8 +19,11 @@ const EVENT_PAGE_SIZE: usize = 50;
 const DEFAULT_BUFFERED_EVENTS: usize = 5_000;
 const MAX_BUFFERED_EVENTS: usize = 5_000;
 const RENDER_FLUSH_DELAY_MS: u32 = 32;
-const STREAM_VIRTUALIZATION_MIN_CHUNKS: usize = 100;
-const STREAM_VIRTUALIZATION_OVERSCAN_PX: i32 = 720;
+// Rendering a few hundred chunks is still cheap enough here and avoids the
+// visible blank gap that can appear when a fast scroll outruns the virtualized
+// window for a frame.
+const STREAM_VIRTUALIZATION_MIN_CHUNKS: usize = 600;
+const STREAM_VIRTUALIZATION_OVERSCAN_PX: i32 = 1_600;
 const STREAM_CHUNK_BASE_HEIGHT_PX: i32 = 56;
 const STREAM_CHUNK_LINE_HEIGHT_PX: i32 = 20;
 const STREAM_WRAP_WIDTH_CHARS: usize = 80;
@@ -62,6 +65,7 @@ enum StreamFilter {
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct StreamChunk {
+    device_id: String,
     source: LogSource,
     channel: LogChannel,
     level: LogLevel,
@@ -80,6 +84,7 @@ struct StreamWindow {
 
 #[derive(Clone, PartialEq, Eq)]
 struct StreamAnchor {
+    device_id: String,
     source: LogSource,
     channel: LogChannel,
     started_at: DateTime<Utc>,
@@ -889,7 +894,8 @@ pub(crate) fn build_stream_chunks(events: &[LogEvent]) -> Vec<StreamChunk> {
     for event in events {
         let normalized = event.message.trim_end_matches('\n').to_owned();
         if let Some(last) = chunks.last_mut() {
-            if last.source == event.source
+            if last.device_id == event.device_id
+                && last.source == event.source
                 && last.channel == event.channel
                 && should_merge_stream_chunk(last, event)
             {
@@ -900,6 +906,7 @@ pub(crate) fn build_stream_chunks(events: &[LogEvent]) -> Vec<StreamChunk> {
             }
         }
         chunks.push(StreamChunk {
+            device_id: event.device_id.clone(),
             source: event.source.clone(),
             channel: event.channel.clone(),
             level: event.level.clone(),
@@ -1045,6 +1052,7 @@ fn view_stream_terminal(
                             <div class={classes!(if idx > 0 { Some("mt-4 border-t border-white/10 pt-4") } else { None })}>
                                 <div class="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
                                     <div class="flex flex-wrap items-center gap-2">
+                                        <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 font-mono text-xs font-medium text-slate-200">{chunk.device_id.clone()}</span>
                                         <span class={stream_badge_class(&chunk.channel)}>{format_stream_source(&chunk.source, &chunk.channel)}</span>
                                         <span class={stream_level_class(&chunk.level)}>{format!("{:?}", chunk.level)}</span>
                                     </div>
@@ -1165,10 +1173,18 @@ fn compute_stream_window(
 }
 
 fn estimate_stream_chunk_height(chunk: &StreamChunk) -> i32 {
+    let plain_render = should_plain_render_stream_chunk(chunk);
     let line_count = chunk
         .lines
         .iter()
-        .map(|l| estimate_visual_line_count(l))
+        .map(|line| {
+            let rendered = if plain_render {
+                plain_log_text(line)
+            } else {
+                visible_log_text(line)
+            };
+            estimate_visual_line_count(&rendered)
+        })
         .sum::<usize>()
         .max(1) as i32;
     STREAM_CHUNK_BASE_HEIGHT_PX + (line_count * STREAM_CHUNK_LINE_HEIGHT_PX)
@@ -1194,6 +1210,7 @@ fn capture_stream_anchor(chunks: &[StreamChunk], scroll_top: i32) -> Option<Stre
         let next = traversed + h;
         if target < next {
             return Some(StreamAnchor {
+                device_id: chunk.device_id.clone(),
                 source: chunk.source.clone(),
                 channel: chunk.channel.clone(),
                 started_at: chunk.started_at,
@@ -1203,6 +1220,7 @@ fn capture_stream_anchor(chunks: &[StreamChunk], scroll_top: i32) -> Option<Stre
         traversed = next;
     }
     chunks.last().map(|c| StreamAnchor {
+        device_id: c.device_id.clone(),
         source: c.source.clone(),
         channel: c.channel.clone(),
         started_at: c.started_at,
@@ -1213,7 +1231,8 @@ fn capture_stream_anchor(chunks: &[StreamChunk], scroll_top: i32) -> Option<Stre
 fn restore_stream_anchor_scroll_top(chunks: &[StreamChunk], anchor: &StreamAnchor) -> Option<i32> {
     let mut traversed = 0;
     for chunk in chunks {
-        if chunk.source == anchor.source
+        if chunk.device_id == anchor.device_id
+            && chunk.source == anchor.source
             && chunk.channel == anchor.channel
             && chunk.started_at == anchor.started_at
         {
@@ -1379,9 +1398,23 @@ mod tests {
     }
 
     #[test]
+    fn does_not_merge_adjacent_events_from_different_devices() {
+        let mut beta = sample_event(1, "boot line 2");
+        beta.device_id = "board-beta".into();
+        let events = vec![sample_event(0, "boot line 1"), beta];
+
+        let chunks = build_stream_chunks(&events);
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].device_id, "board-alpha");
+        assert_eq!(chunks[1].device_id, "board-beta");
+    }
+
+    #[test]
     fn virtualizes_large_static_logs_to_an_overscanned_slice() {
-        let chunks: Vec<StreamChunk> = (0..400)
+        let chunks: Vec<StreamChunk> = (0..1_200)
             .map(|i| StreamChunk {
+                device_id: format!("board-{i}"),
                 source: LogSource::Serial,
                 channel: LogChannel::Stdout,
                 level: LogLevel::Info,
@@ -1393,15 +1426,38 @@ mod tests {
         let window = compute_stream_window(&chunks, 12_000, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
         assert!(window.start_index > 0);
         assert!(window.end_index < chunks.len());
-        assert!(window.end_index - window.start_index < 40);
+        assert!(window.end_index - window.start_index < chunks.len());
         assert!(window.top_padding_px > 0);
         assert!(window.bottom_padding_px > 0);
+    }
+
+    #[test]
+    fn keeps_moderate_chunk_sets_fully_rendered_to_avoid_scroll_gaps() {
+        let chunks: Vec<StreamChunk> = (0..500)
+            .map(|i| StreamChunk {
+                device_id: format!("board-{i}"),
+                source: LogSource::Serial,
+                channel: LogChannel::Stdout,
+                level: LogLevel::Info,
+                started_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
+                ended_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
+                lines: vec![format!("line {i}")],
+            })
+            .collect();
+
+        let window = compute_stream_window(&chunks, 12_000, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
+
+        assert_eq!(window.start_index, 0);
+        assert_eq!(window.end_index, chunks.len());
+        assert_eq!(window.top_padding_px, 0);
+        assert_eq!(window.bottom_padding_px, 0);
     }
 
     #[test]
     fn keeps_small_chunk_sets_fully_rendered() {
         let chunks: Vec<StreamChunk> = (0..4)
             .map(|i| StreamChunk {
+                device_id: format!("board-{i}"),
                 source: LogSource::Serial,
                 channel: LogChannel::Stdout,
                 level: LogLevel::Info,
@@ -1421,6 +1477,7 @@ mod tests {
     #[test]
     fn long_wrapped_lines_increase_estimated_chunk_height() {
         let short = StreamChunk {
+            device_id: "board-alpha".into(),
             source: LogSource::Serial,
             channel: LogChannel::Stdout,
             level: LogLevel::Info,
@@ -1436,9 +1493,32 @@ mod tests {
     }
 
     #[test]
+    fn rich_render_height_ignores_hidden_ansi_and_prefix_text() {
+        let rendered = StreamChunk {
+            device_id: "board-alpha".into(),
+            source: LogSource::Serial,
+            channel: LogChannel::Stdout,
+            level: LogLevel::Info,
+            started_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
+            ended_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
+            lines: vec!["\u{1b}[36m[I]\u{1b}[0m worker.loop: boot completed".into()],
+        };
+        let plain = StreamChunk {
+            lines: vec!["boot completed".into()],
+            ..rendered.clone()
+        };
+
+        assert_eq!(
+            estimate_stream_chunk_height(&rendered),
+            estimate_stream_chunk_height(&plain)
+        );
+    }
+
+    #[test]
     fn restores_scroll_top_from_anchor_after_prefix_chunks_drop() {
         let chunks: Vec<StreamChunk> = (0..4)
             .map(|i| StreamChunk {
+                device_id: format!("board-{i}"),
                 source: LogSource::Serial,
                 channel: LogChannel::Stdout,
                 level: LogLevel::Info,
@@ -1457,6 +1537,7 @@ mod tests {
     #[test]
     fn anchor_returns_none_when_chunk_is_gone() {
         let chunks = vec![StreamChunk {
+            device_id: "board-alpha".into(),
             source: LogSource::Serial,
             channel: LogChannel::Stdout,
             level: LogLevel::Info,
@@ -1465,6 +1546,7 @@ mod tests {
             lines: vec!["line 1".into()],
         }];
         let anchor = StreamAnchor {
+            device_id: "board-alpha".into(),
             source: LogSource::Serial,
             channel: LogChannel::Stdout,
             started_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
@@ -1476,6 +1558,7 @@ mod tests {
     #[test]
     fn large_chunks_switch_to_plain_rendering() {
         let chunk = StreamChunk {
+            device_id: "board-alpha".into(),
             source: LogSource::Serial,
             channel: LogChannel::Stdout,
             level: LogLevel::Info,
@@ -1491,6 +1574,7 @@ mod tests {
     #[test]
     fn small_chunks_keep_rich_rendering() {
         let chunk = StreamChunk {
+            device_id: "board-alpha".into(),
             source: LogSource::Serial,
             channel: LogChannel::Stdout,
             level: LogLevel::Info,

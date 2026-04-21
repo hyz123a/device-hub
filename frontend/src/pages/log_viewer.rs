@@ -1,4 +1,6 @@
-use web_sys::HtmlInputElement;
+use device_hub_shared::Device;
+use wasm_bindgen_futures::spawn_local;
+use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 
 use crate::api;
@@ -13,6 +15,8 @@ pub struct LogViewerProps {
 #[function_component(LogViewerPage)]
 pub fn log_viewer_page(props: &LogViewerProps) -> Html {
     let device_filter = use_state(|| props.device_id.clone().unwrap_or_default());
+    let available_devices = use_state(|| Option::<Vec<Device>>::None);
+    let device_options_error = use_state(|| Option::<String>::None);
     let job_filter = use_state(String::new);
     let connect_revision = use_state(|| 0_u32);
     let connection = use_state(|| "connecting".to_owned());
@@ -27,6 +31,37 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
         });
     }
 
+    {
+        let available_devices = available_devices.clone();
+        let device_options_error = device_options_error.clone();
+        use_effect_with(props.device_id.clone(), move |device_id| {
+            if device_id.is_some() {
+                available_devices.set(None);
+                device_options_error.set(None);
+            } else {
+                spawn_local(async move {
+                    match api::list_devices().await {
+                        Ok(mut devices) => {
+                            devices.sort_by(|left, right| {
+                                left.label
+                                    .cmp(&right.label)
+                                    .then(left.id.cmp(&right.id))
+                            });
+                            available_devices.set(Some(devices));
+                            device_options_error.set(None);
+                        }
+                        Err(message) => {
+                            available_devices.set(None);
+                            device_options_error.set(Some(message));
+                        }
+                    }
+                });
+            }
+
+            || {}
+        });
+    }
+
     let ws_url = api::ws_url(Some(&device_filter), Some(&job_filter)).ok();
 
     let on_device_input = {
@@ -34,6 +69,13 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
         Callback::from(move |event: InputEvent| {
             let input: HtmlInputElement = event.target_unchecked_into();
             device_filter.set(input.value());
+        })
+    };
+    let on_device_select = {
+        let device_filter = device_filter.clone();
+        Callback::from(move |event: Event| {
+            let select: HtmlSelectElement = event.target_unchecked_into();
+            device_filter.set(select.value());
         })
     };
     let on_job_input = {
@@ -82,7 +124,53 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                 <div class="mt-5 grid items-end gap-4 lg:grid-cols-3">
                     <label class="grid gap-2 text-sm text-ink-muted">
                         <span>{"Device filter"}</span>
-                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={(*device_filter).clone()} oninput={on_device_input} placeholder="board-alpha" readonly={props.device_id.is_some()} />
+                        {
+                            if props.device_id.is_some() {
+                                html! {
+                                    <input
+                                        class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                        value={(*device_filter).clone()}
+                                        oninput={on_device_input.clone()}
+                                        placeholder="board-alpha"
+                                        readonly=true
+                                    />
+                                }
+                            } else if let Some(devices) = (*available_devices).clone() {
+                                html! {
+                                    <select
+                                        class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                        value={(*device_filter).clone()}
+                                        onchange={on_device_select}
+                                    >
+                                        <option value="">{"All devices"}</option>
+                                        {
+                                            for devices.into_iter().map(|device| {
+                                                let value = device.id.clone();
+                                                html! {
+                                                    <option value={value.clone()}>{format!("{} ({})", device.label, value)}</option>
+                                                }
+                                            })
+                                        }
+                                    </select>
+                                }
+                            } else {
+                                html! {
+                                    <input
+                                        class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                        value={(*device_filter).clone()}
+                                        oninput={on_device_input.clone()}
+                                        placeholder="board-alpha"
+                                    />
+                                }
+                            }
+                        }
+                        {
+                            if let Some(message) = (*device_options_error).clone() {
+                                html! { <span class="text-xs text-amber-700">{format!("Device list unavailable, using manual input: {message}")}</span> }
+                            } else {
+                                Html::default()
+                            }
+                        }
                     </label>
                     <label class="grid gap-2 text-sm text-ink-muted">
                         <span>{"Job filter"}</span>

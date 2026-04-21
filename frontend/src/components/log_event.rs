@@ -129,6 +129,10 @@ pub(crate) fn plain_log_text(message: &str) -> String {
         .collect()
 }
 
+pub(crate) fn visible_log_text(message: &str) -> String {
+    analyze_message(message).body
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct AnsiStyle {
     fg: Option<AnsiColor>,
@@ -611,5 +615,14 @@ mod tests {
     fn plain_log_text_strips_ansi_sequences() {
         assert_eq!(plain_log_text("\u{1b}[33mWARN\u{1b}[0m ok"), "WARN ok");
         assert_eq!(plain_log_text("plain text"), "plain text");
+    }
+
+    #[test]
+    fn visible_log_text_matches_rendered_body() {
+        assert_eq!(
+            visible_log_text("\u{1b}[36m[I]\u{1b}[0m worker.loop: boot completed"),
+            "boot completed"
+        );
+        assert_eq!(visible_log_text("plain text"), "plain text");
     }
 }
