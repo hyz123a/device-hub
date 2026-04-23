@@ -319,9 +319,25 @@ fn push_bytes_into_queue(
     max_message_bytes: usize,
     bytes: &[u8],
 ) {
-    for &byte in bytes {
-        if matches!(byte, b'\n' | b'\r') {
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if byte == b'\r' {
+            buffer.push(byte);
+            if bytes.get(index + 1) == Some(&b'\n') {
+                buffer.push(b'\n');
+                index += 1;
+            }
             emit_pending_line(buffer, queued);
+            index += 1;
+            continue;
+        }
+
+        if byte == b'\n' {
+            buffer.push(byte);
+            emit_pending_line(buffer, queued);
+            index += 1;
             continue;
         }
 
@@ -329,12 +345,13 @@ fn push_bytes_into_queue(
         if buffer.len() >= max_message_bytes {
             emit_buffer_chunk(buffer, queued, max_message_bytes);
         }
+        index += 1;
     }
 }
 
 fn emit_pending_line(buffer: &mut Vec<u8>, queued: &mut VecDeque<SerialLogChunk>) {
     let bytes = mem::take(buffer);
-    let line = normalize_line(bytes);
+    let line = decode_chunk(bytes);
     if !line.is_empty() {
         queued.push_back(SerialLogChunk { line });
     }
@@ -347,16 +364,14 @@ fn emit_buffer_chunk(
 ) {
     let remainder = buffer.split_off(max_message_bytes);
     let chunk = mem::replace(buffer, remainder);
-    let line = normalize_line(chunk);
+    let line = decode_chunk(chunk);
     if !line.is_empty() {
         queued.push_back(SerialLogChunk { line });
     }
 }
 
-fn normalize_line(bytes: Vec<u8>) -> String {
-    String::from_utf8_lossy(&bytes)
-        .trim_end_matches('\r')
-        .to_owned()
+fn decode_chunk(bytes: Vec<u8>) -> String {
+    String::from_utf8_lossy(&bytes).to_string()
 }
 
 #[cfg(test)]
@@ -365,8 +380,8 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
-    fn normalize_line_trims_trailing_carriage_return() {
-        assert_eq!(normalize_line(b"boot ok\r".to_vec()), "boot ok");
+    fn decode_chunk_preserves_terminal_control_bytes() {
+        assert_eq!(decode_chunk(b"boot ok\r".to_vec()), "boot ok\r");
     }
 
     #[test]
@@ -377,7 +392,7 @@ mod tests {
         push_bytes_into_queue(&mut buffer, &mut queued, 4, b"abcdef\n");
 
         let chunks: Vec<_> = queued.into_iter().map(|chunk| chunk.line).collect();
-        assert_eq!(chunks, vec!["abcd", "ef"]);
+        assert_eq!(chunks, vec!["abcd", "ef\n"]);
     }
 
     #[test]
@@ -388,7 +403,7 @@ mod tests {
         push_bytes_into_queue(&mut buffer, &mut queued, 64, b"booting\rready\r\nnext\n");
 
         let chunks: Vec<_> = queued.into_iter().map(|chunk| chunk.line).collect();
-        assert_eq!(chunks, vec!["booting", "ready", "next"]);
+        assert_eq!(chunks, vec!["booting\r", "ready\r\n", "next\n"]);
     }
 
     #[cfg(unix)]
@@ -476,7 +491,7 @@ mod tests {
             .await
             .expect("tail chunk result")
             .expect("tail chunk");
-        assert_eq!(chunk.line, "ok");
+        assert_eq!(chunk.line, "ok\n");
         assert_eq!(
             write_task
                 .await

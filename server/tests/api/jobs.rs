@@ -368,7 +368,7 @@ async fn serial_tail_streams_device_output() {
         .expect("write serial output");
 
     let tail_events = wait_for_job_events(&app, &tail.id, 5).await;
-    assert!(tail_events.iter().any(|event| event.message == "boot ok"));
+    assert!(tail_events.iter().any(|event| event.message.starts_with("boot ok")));
 
     cancel_job_if_running(&app, &tail.id).await;
 }
@@ -458,7 +458,7 @@ async fn serial_write_succeeds_while_serial_tail_is_running() {
     );
 
     let tail_events = wait_for_job_events(&app, &tail.id, 5).await;
-    assert!(tail_events.iter().any(|event| event.message == "ok"));
+    assert!(tail_events.iter().any(|event| event.message.starts_with("ok")));
 
     cancel_job_if_running(&app, &tail.id).await;
 }
@@ -522,7 +522,7 @@ async fn serial_tail_releases_session_after_cancel() {
     assert!(
         second_tail_events
             .iter()
-            .any(|event| event.message == "second session")
+            .any(|event| event.message.starts_with("second session"))
     );
 
     cancel_job_if_running(&app, &second_tail.id).await;
@@ -940,6 +940,50 @@ async fn websocket_device_filter_only_streams_matching_device_events() {
 
     assert!(app.cancel_job(&alpha_job.id).await.status().is_success());
     assert!(app.cancel_job(&mixed_job.id).await.status().is_success());
+}
+
+#[tokio::test]
+async fn websocket_source_and_search_filters_only_stream_matching_events() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "case \"$*\" in *192.168.1.100*) printf 'alpha boot\n'; printf 'alpha warn\n' >&2 ;; *192.168.1.102*) printf 'mixed boot\n'; printf 'mixed warn\n' >&2 ;; esac\nsleep 5",
+    );
+    let app = spawn_app_with_config(multi_ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let mut ws =
+        connect_ws(&app, "/api/ws?device_id=board-alpha&source=ssh&search=warn").await;
+
+    let alpha_job: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.tail",
+            Some(&ActionRequest {
+                payload: Some("/var/log/alpha.log".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid alpha job json");
+
+    let mut messages = Vec::new();
+    for _ in 0..4 {
+        messages.push(recv_ws_event(&mut ws).await.message);
+        if messages.iter().any(|message| message == "alpha warn") {
+            break;
+        }
+    }
+
+    assert!(messages.iter().any(|message| message == "alpha warn"));
+    assert!(!messages.iter().any(|message| message == "alpha boot"));
+    assert!(!messages.iter().any(|message| message == "job accepted"));
+
+    assert!(app.cancel_job(&alpha_job.id).await.status().is_success());
 }
 
 #[tokio::test]

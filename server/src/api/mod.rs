@@ -216,6 +216,10 @@ pub struct WsQuery {
     pub device_id: Option<String>,
     pub job_id: Option<String>,
     pub since: Option<chrono::DateTime<chrono::Utc>>,
+    pub source: Option<LogSource>,
+    pub level: Option<LogLevel>,
+    pub search: Option<String>,
+    pub structured_only: Option<bool>,
 }
 
 pub async fn ws_events(
@@ -224,11 +228,7 @@ pub async fn ws_events(
     Query(query): Query<WsQuery>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        let filter = EventFilter {
-            device_id: query.device_id,
-            job_id: query.job_id,
-            since: query.since,
-        };
+        let filter = ws_event_filter(query);
         handle_socket(socket, state, filter).await;
     })
 }
@@ -284,73 +284,37 @@ fn artifact_content_type(name: &str) -> HeaderValue {
 }
 
 fn filter_job_events(events: Vec<LogEvent>, query: &JobEventsQuery) -> Vec<LogEvent> {
-    let search = query
-        .search
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase);
+    let filter = EventFilter {
+        source: query.source.clone(),
+        level: query.level.clone(),
+        search: normalize_search(query.search.clone()),
+        ..EventFilter::default()
+    };
 
     events
         .into_iter()
-        .filter(|event| {
-            query
-                .source
-                .as_ref()
-                .is_none_or(|source| &event.source == source)
-        })
-        .filter(|event| {
-            query
-                .level
-                .as_ref()
-                .is_none_or(|level| &event.level == level)
-        })
-        .filter(|event| {
-            search
-                .as_deref()
-                .is_none_or(|value| event_matches_search_query(event, value))
-        })
+        .filter(|event| filter.matches(event))
         .collect()
 }
 
-fn event_matches_search_query(event: &LogEvent, query: &str) -> bool {
-    [
-        event.message.as_str(),
-        event.device_id.as_str(),
-        event.job_id.as_str(),
-        log_source_label(&event.source),
-        log_channel_label(&event.channel),
-        log_level_label(&event.level),
-    ]
-    .into_iter()
-    .any(|value| value.to_ascii_lowercase().contains(query))
-}
-
-fn log_source_label(source: &LogSource) -> &'static str {
-    match source {
-        LogSource::Ssh => "ssh",
-        LogSource::Serial => "serial",
-        LogSource::Jlink => "jlink",
-        LogSource::System => "system",
-        LogSource::Job => "job",
+fn ws_event_filter(query: WsQuery) -> EventFilter {
+    EventFilter {
+        device_id: query.device_id,
+        job_id: query.job_id,
+        since: query.since,
+        source: query.source,
+        level: query.level,
+        search: normalize_search(query.search),
+        structured_only: query.structured_only,
     }
 }
 
-fn log_channel_label(channel: &LogChannel) -> &'static str {
-    match channel {
-        LogChannel::Stdout => "stdout",
-        LogChannel::Stderr => "stderr",
-        LogChannel::System => "system",
-    }
-}
-
-fn log_level_label(level: &LogLevel) -> &'static str {
-    match level {
-        LogLevel::Debug => "debug",
-        LogLevel::Info => "info",
-        LogLevel::Warn => "warn",
-        LogLevel::Error => "error",
-    }
+fn normalize_search(search: Option<String>) -> Option<String> {
+    search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
 }
 
 fn build_job_summary(
