@@ -2,7 +2,9 @@
   "name": "device-hub-frontend",
   "private": true,
   "scripts": {
-    "build:css": "tailwindcss -i ./tailwind.css -o ./style.css"
+    "build:assets": "npm run build:css && npm run build:xterm-bundle",
+    "build:css": "tailwindcss -i ./tailwind.css -o ./style.css",
+    "build:xterm-bundle": "npm --prefix ./bundle run build"
   },
   "devDependencies": {
     "tailwindcss": "^3.4.17"

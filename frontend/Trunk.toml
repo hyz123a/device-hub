@@ -5,7 +5,7 @@ port = 8089
 [[hooks]]
 stage = "pre_build"
 command = "npm"
-command_arguments = ["run", "build:css"]
+command_arguments = ["run", "build:assets"]
 
 [[proxy]]
 backend = "http://127.0.0.1:3000/api/devices"

@@ -19,3 +19,33 @@
     @apply text-inherit no-underline;
   }
 }
+
+@layer components {
+  .xterm-shell .xterm {
+    height: 100%;
+  }
+
+  .xterm-shell .xterm-viewport {
+    overflow-y: auto !important;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.55) rgba(15, 23, 42, 0.35);
+  }
+
+  .xterm-shell .xterm-viewport::-webkit-scrollbar {
+    width: 12px;
+  }
+
+  .xterm-shell .xterm-viewport::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.35);
+  }
+
+  .xterm-shell .xterm-viewport::-webkit-scrollbar-thumb {
+    border: 2px solid rgba(15, 23, 42, 0.35);
+    border-radius: 9999px;
+    background: rgba(148, 163, 184, 0.55);
+  }
+
+  .xterm-shell .xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.78);
+  }
+}

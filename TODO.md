@@ -15,6 +15,7 @@
 - [x] Migrate `frontend` styling to Tailwind CSS by scanning `frontend/src/**/*.rs`, compiling a generated stylesheet, and switching `frontend/index.html` to load it
 
 ## Next
+- [x] Add an implfuture-style Vite bundle for `xterm.js` and switch the log panel to a terminal-like visual renderer focused on presentation quality
 - [x] Refactor `server` toward a real hexagonal architecture by introducing explicit ports/use cases and removing direct core dependencies on concrete adapters
 - [x] Add artifact export/download flow for completed jobs
 - [x] Add `serial` support to the shared schema, device detail page, and server action routing so `serial.tail` becomes a first-class job like `ssh.tail`

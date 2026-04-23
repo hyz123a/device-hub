@@ -1,35 +1,21 @@
 use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
 use device_hub_shared::{LogChannel, LogEvent, LogLevel, LogSource};
 use gloo_timers::callback::Timeout;
 use wasm_bindgen::{JsCast, closure::Closure};
-use web_sys::{
-    ErrorEvent, Event, HtmlElement, HtmlInputElement, HtmlSelectElement, KeyboardEvent,
-    MessageEvent, MouseEvent, WebSocket, window,
-};
+use web_sys::{ErrorEvent, Event, HtmlInputElement, HtmlSelectElement, MessageEvent, WebSocket, window};
 use yew::prelude::*;
 
 use crate::components::{
-    log_event::{LogEventCard, plain_log_text, render_log_message, visible_log_text},
+    log_event::LogEventCard,
     serial_write_panel::SerialWritePanel,
+    xterm_terminal::XtermTerminal,
 };
 
 const EVENT_PAGE_SIZE: usize = 50;
-const DEFAULT_BUFFERED_EVENTS: usize = 5_000;
-const MAX_BUFFERED_EVENTS: usize = 5_000;
+const DEFAULT_BUFFERED_EVENTS: usize = 100_000;
+const MAX_BUFFERED_EVENTS: usize = 100_000;
 const RENDER_FLUSH_DELAY_MS: u32 = 32;
-// Rendering a few hundred chunks is still cheap enough here and avoids the
-// visible blank gap that can appear when a fast scroll outruns the virtualized
-// window for a frame.
-const STREAM_VIRTUALIZATION_MIN_CHUNKS: usize = 600;
-const STREAM_VIRTUALIZATION_OVERSCAN_PX: i32 = 1_600;
-const STREAM_CHUNK_BASE_HEIGHT_PX: i32 = 56;
-const STREAM_CHUNK_LINE_HEIGHT_PX: i32 = 20;
-const STREAM_WRAP_WIDTH_CHARS: usize = 80;
-const STREAM_CHUNK_PLAIN_RENDER_LINE_THRESHOLD: usize = 160;
-const STREAM_CHUNK_PLAIN_RENDER_CHAR_THRESHOLD: usize = 32_000;
-const STREAM_TAIL_LOCK_THRESHOLD_PX: i32 = 64;
 
 struct WsBindings {
     socket: WebSocket,
@@ -63,33 +49,6 @@ enum StreamFilter {
     Source(LogSource),
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct StreamChunk {
-    device_id: String,
-    source: LogSource,
-    channel: LogChannel,
-    level: LogLevel,
-    started_at: DateTime<Utc>,
-    ended_at: DateTime<Utc>,
-    lines: Vec<String>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct StreamWindow {
-    start_index: usize,
-    end_index: usize,
-    top_padding_px: i32,
-    bottom_padding_px: i32,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct StreamAnchor {
-    device_id: String,
-    source: LogSource,
-    channel: LogChannel,
-    started_at: DateTime<Utc>,
-    offset_px: i32,
-}
 
 #[derive(Properties, PartialEq)]
 pub struct StreamLogPanelProps {
@@ -127,18 +86,14 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     let dedup_set = use_mut_ref(HashSet::<u64>::new);
     let pending_render = use_mut_ref(|| Option::<Timeout>::None);
     let search_query = use_state(String::new);
+    let debounced_search_query = use_state(String::new);
+    let pending_search_sync = use_mut_ref(|| Option::<Timeout>::None);
     let internal_connection = use_state(|| "connecting".to_owned());
     let view_mode = use_state(|| LogViewMode::Stream);
     let stream_filter = use_state(|| StreamFilter::DeviceLogs);
-    let follow_stream_tail = use_state(|| true);
+    let scroll_to_bottom_revision = use_state(|| 0_u32);
+    let stream_at_bottom = use_state(|| true);
     let logs_fullscreen = use_state(|| false);
-    let stream_scroll_top = use_state(|| 0_i32);
-    let stream_viewport_height = use_state(|| 720_i32);
-    let selection_lock_active = use_state(|| false);
-    let frozen_stream_chunks = use_state(|| Option::<Vec<StreamChunk>>::None);
-    let stream_container_ref = use_node_ref();
-    let last_stream_scroll_top = use_mut_ref(|| 0_i32);
-    let stream_anchor = use_mut_ref(|| Option::<StreamAnchor>::None);
     let socket = use_mut_ref(|| Option::<WsBindings>::None);
 
     let connection = props
@@ -177,6 +132,39 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         });
     }
 
+    {
+        let debounced_search_query = debounced_search_query.clone();
+        let pending_search_sync = pending_search_sync.clone();
+        let search_query_value = (*search_query).clone();
+        use_effect_with(search_query_value, move |search_query_value| {
+            pending_search_sync.borrow_mut().take();
+            let debounced_search_query = debounced_search_query.clone();
+            let next = search_query_value.clone();
+            *pending_search_sync.borrow_mut() = Some(Timeout::new(250, move || {
+                debounced_search_query.set(next.clone());
+            }));
+            let pending_search_sync = pending_search_sync.clone();
+            move || {
+                pending_search_sync.borrow_mut().take();
+            }
+        });
+    }
+
+    let effective_ws_url = use_memo(
+        (
+            props.ws_url.clone(),
+            (*stream_filter).clone(),
+            (*debounced_search_query).clone(),
+        ),
+        |(base_ws_url, stream_filter, debounced_search_query)| {
+            append_stream_ws_query(
+                base_ws_url.clone(),
+                stream_filter,
+                debounced_search_query.as_str(),
+            )
+        },
+    );
+
     // WebSocket lifecycle
     {
         let events = events.clone();
@@ -188,7 +176,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         let buffered_event_limit = buffered_event_limit.clone();
         let pending_render = pending_render.clone();
         let socket = socket.clone();
-        let ws_url = props.ws_url.clone();
+        let ws_url = (*effective_ws_url).clone();
         let connect_revision = props.connect_revision;
         use_effect_with((connect_revision, ws_url.clone()), move |_| {
             if let Some(existing) = socket.borrow_mut().take() {
@@ -370,28 +358,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     );
     let filtered_stream_events = &*filtered_stream_events;
 
-    let stream_chunks = use_memo(filtered_stream_events.clone(), |events| {
-        build_stream_chunks(events)
-    });
-    let stream_chunks = &*stream_chunks;
-
-    let displayed_stream_chunks = if *selection_lock_active {
-        (*frozen_stream_chunks)
-            .clone()
-            .unwrap_or_else(|| (*stream_chunks).clone())
-    } else {
-        (*stream_chunks).clone()
-    };
-
-    let stream_window = compute_stream_window(
-        &displayed_stream_chunks,
-        *stream_scroll_top,
-        *stream_viewport_height,
-        STREAM_VIRTUALIZATION_OVERSCAN_PX,
-    );
-    let visible_stream_chunks =
-        &displayed_stream_chunks[stream_window.start_index..stream_window.end_index];
-
     let available_sources = use_memo(events.clone(), |events| available_device_sources(events));
     let available_sources = &*available_sources;
 
@@ -437,35 +403,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         Callback::from(move |_| view_mode.set(LogViewMode::Stream))
     };
 
-    let on_jump_to_latest = {
-        let follow_stream_tail = follow_stream_tail.clone();
-        let stream_scroll_top = stream_scroll_top.clone();
-        let selection_lock_active = selection_lock_active.clone();
-        let stream_container_ref = stream_container_ref.clone();
-        let last_stream_scroll_top = last_stream_scroll_top.clone();
-        let stream_anchor = stream_anchor.clone();
-        Callback::from(move |_| {
-            selection_lock_active.set(false);
-            follow_stream_tail.set(true);
-            *stream_anchor.borrow_mut() = None;
-            if let Some(el) = stream_container_ref.cast::<HtmlElement>() {
-                let scroll_top = scroll_stream_to_bottom(&el);
-                *last_stream_scroll_top.borrow_mut() = scroll_top;
-                stream_scroll_top.set(scroll_top);
-                if let Some(w) = window() {
-                    let stream_scroll_top = stream_scroll_top.clone();
-                    let last_stream_scroll_top = last_stream_scroll_top.clone();
-                    let cb = Closure::once_into_js(move || {
-                        let scroll_top = scroll_stream_to_bottom(&el);
-                        *last_stream_scroll_top.borrow_mut() = scroll_top;
-                        stream_scroll_top.set(scroll_top);
-                    });
-                    let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
-                }
-            }
-        })
-    };
-
     let on_filter_all = {
         let f = stream_filter.clone();
         Callback::from(move |_| f.set(StreamFilter::All))
@@ -479,173 +416,21 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         Callback::from(move |_| f.set(StreamFilter::Structured))
     };
 
-    let pending_scroll_raf = use_mut_ref(|| Option::<i32>::None);
-    let on_stream_scroll = {
-        let stream_container_ref = stream_container_ref.clone();
-        let follow_stream_tail = follow_stream_tail.clone();
-        let stream_scroll_top = stream_scroll_top.clone();
-        let stream_viewport_height = stream_viewport_height.clone();
-        let last_stream_scroll_top = last_stream_scroll_top.clone();
-        let displayed_stream_chunks = displayed_stream_chunks.clone();
-        let stream_anchor = stream_anchor.clone();
-        let pending_scroll_raf = pending_scroll_raf.clone();
-        Callback::from(move |_| {
-            if let Some(el) = stream_container_ref.cast::<HtmlElement>() {
-                let st = el.scroll_top();
-                *last_stream_scroll_top.borrow_mut() = st;
-                let at_tail = is_stream_scrolled_to_bottom(&el, STREAM_TAIL_LOCK_THRESHOLD_PX);
-                if at_tail {
-                    *stream_anchor.borrow_mut() = None;
-                } else {
-                    *stream_anchor.borrow_mut() =
-                        capture_stream_anchor(&displayed_stream_chunks, st);
-                }
-                follow_stream_tail.set(at_tail);
-            }
-            if pending_scroll_raf.borrow().is_some() {
-                return;
-            }
-            let stream_container_ref = stream_container_ref.clone();
-            let follow_stream_tail = follow_stream_tail.clone();
-            let stream_scroll_top = stream_scroll_top.clone();
-            let stream_viewport_height = stream_viewport_height.clone();
-            let last_stream_scroll_top = last_stream_scroll_top.clone();
-            let displayed_stream_chunks = displayed_stream_chunks.clone();
-            let stream_anchor = stream_anchor.clone();
-            let raf_pending = pending_scroll_raf.clone();
-            let cb = Closure::once_into_js(move || {
-                *raf_pending.borrow_mut() = None;
-                if let Some(el) = stream_container_ref.cast::<HtmlElement>() {
-                    let st = el.scroll_top();
-                    *last_stream_scroll_top.borrow_mut() = st;
-                    stream_scroll_top.set(st);
-                    stream_viewport_height.set(el.client_height());
-                    let at_tail = is_stream_scrolled_to_bottom(&el, STREAM_TAIL_LOCK_THRESHOLD_PX);
-                    if at_tail {
-                        *stream_anchor.borrow_mut() = None;
-                    } else {
-                        *stream_anchor.borrow_mut() =
-                            capture_stream_anchor(&displayed_stream_chunks, st);
-                    }
-                    follow_stream_tail.set(at_tail);
-                }
-            });
-            if let Some(w) = window() {
-                if let Ok(id) = w.request_animation_frame(cb.as_ref().unchecked_ref()) {
-                    *pending_scroll_raf.borrow_mut() = Some(id);
-                }
-            }
-        })
-    };
-
-    // Freeze stream chunks while text selection is active
-    {
-        let frozen = frozen_stream_chunks.clone();
-        let chunks = (*stream_chunks).clone();
-        let locked = selection_lock_active.clone();
-        use_effect_with((*locked, chunks.clone()), move |_| {
-            if *locked {
-                if frozen.is_none() {
-                    frozen.set(Some(chunks.clone()));
-                }
-            } else if frozen.is_some() {
-                frozen.set(None);
-            }
-            || {}
-        });
-    }
-
-    // Auto-scroll / anchor restore
-    {
-        let stream_container_ref = stream_container_ref.clone();
-        let follow_stream_tail = follow_stream_tail.clone();
-        let stream_scroll_top = stream_scroll_top.clone();
-        let stream_viewport_height = stream_viewport_height.clone();
-        let selection_lock_active = selection_lock_active.clone();
-        let last_stream_scroll_top = last_stream_scroll_top.clone();
-        let stream_anchor = stream_anchor.clone();
-        let view_mode_value = *view_mode;
-        let chunk_count = displayed_stream_chunks.len();
-        let event_count = filtered_stream_events.len();
-        let chunks_for_restore = displayed_stream_chunks.clone();
-        use_effect_with(
-            (
-                view_mode_value,
-                chunk_count,
-                event_count,
-                *follow_stream_tail,
-                *selection_lock_active,
-            ),
-            move |_| {
-                if view_mode_value == LogViewMode::Stream {
-                    if let Some(el) = stream_container_ref.cast::<HtmlElement>() {
-                        stream_viewport_height.set(el.client_height());
-                        if *selection_lock_active {
-                            *last_stream_scroll_top.borrow_mut() = el.scroll_top();
-                            stream_scroll_top.set(el.scroll_top());
-                        } else if *follow_stream_tail {
-                            *stream_anchor.borrow_mut() = None;
-                            let scroll_top = scroll_stream_to_bottom(&el);
-                            *last_stream_scroll_top.borrow_mut() = scroll_top;
-                            stream_scroll_top.set(scroll_top);
-                            if let Some(w) = window() {
-                                let stream_scroll_top = stream_scroll_top.clone();
-                                let last_stream_scroll_top = last_stream_scroll_top.clone();
-                                let cb = Closure::once_into_js(move || {
-                                    let scroll_top = scroll_stream_to_bottom(&el);
-                                    *last_stream_scroll_top.borrow_mut() = scroll_top;
-                                    stream_scroll_top.set(scroll_top);
-                                });
-                                let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
-                            }
-                        } else {
-                            let restored = stream_anchor
-                                .borrow()
-                                .as_ref()
-                                .and_then(|a| {
-                                    restore_stream_anchor_scroll_top(&chunks_for_restore, a)
-                                })
-                                .unwrap_or(*last_stream_scroll_top.borrow());
-                            el.set_scroll_top(restored);
-                            stream_scroll_top.set(el.scroll_top());
-                            *last_stream_scroll_top.borrow_mut() = el.scroll_top();
-                        }
-                    }
-                }
-                || {}
-            },
-        );
-    }
-
-    // Reset anchor on view/filter change
-    {
-        let last_stream_scroll_top = last_stream_scroll_top.clone();
-        let stream_anchor = stream_anchor.clone();
-        let vm = *view_mode;
-        let sf = (*stream_filter).clone();
-        use_effect_with((vm, sf), move |_| {
-            *last_stream_scroll_top.borrow_mut() = 0;
-            *stream_anchor.borrow_mut() = None;
-            || {}
-        });
-    }
-
-    let on_stream_select_start = {
-        let locked = selection_lock_active.clone();
-        Callback::from(move |_: Event| locked.set(true))
-    };
-    let on_stream_selection_change = {
-        let locked = selection_lock_active.clone();
-        Callback::from(move |_: MouseEvent| locked.set(has_active_text_selection()))
-    };
-    let on_stream_selection_key_up = {
-        let locked = selection_lock_active.clone();
-        Callback::from(move |_: KeyboardEvent| locked.set(has_active_text_selection()))
-    };
-
     let on_toggle_logs_fullscreen = {
         let fs = logs_fullscreen.clone();
         Callback::from(move |_| fs.set(!*fs))
+    };
+
+    let on_jump_to_latest = {
+        let scroll_to_bottom_revision = scroll_to_bottom_revision.clone();
+        Callback::from(move |_| {
+            scroll_to_bottom_revision.set(scroll_to_bottom_revision.wrapping_add(1));
+        })
+    };
+
+    let on_bottom_state_change = {
+        let stream_at_bottom = stream_at_bottom.clone();
+        Callback::from(move |at_bottom: bool| stream_at_bottom.set(at_bottom))
     };
 
     {
@@ -691,10 +476,11 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                                     class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
                                     oninput={on_buffer_limit_change}
                                 >
-                                    <option value="500" selected={cap == 500}>{"500"}</option>
-                                    <option value="1000" selected={cap == 1000}>{"1000"}</option>
-                                    <option value="2000" selected={cap == 2000}>{"2000"}</option>
                                     <option value="5000" selected={cap == 5000}>{"5000"}</option>
+                                    <option value="10000" selected={cap == 10000}>{"10000"}</option>
+                                    <option value="20000" selected={cap == 20000}>{"20000"}</option>
+                                    <option value="50000" selected={cap == 50000}>{"50000"}</option>
+                                    <option value="100000" selected={cap == 100000}>{"100000"}</option>
                                 </select>
                             }
                         }
@@ -760,23 +546,16 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                         } else {
                             html! {
                                 <>
-                                    <span class="font-mono text-sm text-ink-muted">{format!("{} events -> {} chunks", filtered_stream_events.len(), displayed_stream_chunks.len())}</span>
-                                    <button
-                                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
-                                        onclick={on_jump_to_latest}
-                                        disabled={*follow_stream_tail && !*selection_lock_active}
-                                    >{"Jump to latest"}</button>
+                                    <span class="font-mono text-sm text-ink-muted">{format!("{} streamed events", filtered_stream_events.len())}</span>
+                                    <span class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-mono text-sm text-ink-muted">{"xterm incremental view"}</span>
+                                    if !*stream_at_bottom {
+                                        <button
+                                            class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95"
+                                            onclick={on_jump_to_latest}
+                                        >{"Jump to latest"}</button>
+                                    }
                                 </>
                             }
-                        }
-                    }
-                    {
-                        if *view_mode == LogViewMode::Stream && *selection_lock_active {
-                            html! { <span class="font-mono text-sm text-amber-700">{"selection locked"}</span> }
-                        } else if *view_mode == LogViewMode::Stream && !*follow_stream_tail {
-                            html! { <span class="font-mono text-sm text-amber-700">{"reading locked"}</span> }
-                        } else {
-                            Html::default()
                         }
                     }
                     <button
@@ -797,20 +576,14 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                                 .cloned()
                                 .map(|event| html! { <LogEventCard event={event} /> })
                         }
-                    } else if stream_chunks.is_empty() {
+                    } else if filtered_stream_events.is_empty() {
                         html! { <p class="m-0 text-ink-muted">{"No logs match the current stream filter."}</p> }
                     } else {
                         html! {
                             {view_stream_terminal(
-                                &displayed_stream_chunks,
-                                visible_stream_chunks,
-                                stream_window,
-                                stream_container_ref.clone(),
-                                on_stream_scroll.clone(),
-                                on_stream_select_start.clone(),
-                                on_stream_selection_change.clone(),
-                                on_stream_selection_key_up.clone(),
-                                *selection_lock_active,
+                                filtered_stream_events.as_slice(),
+                                *scroll_to_bottom_revision,
+                                on_bottom_state_change.clone(),
                                 *logs_fullscreen,
                             )}
                         }
@@ -851,16 +624,6 @@ fn event_identity_hash(event: &LogEvent) -> u64 {
 // Pure helper functions
 // ---------------------------------------------------------------------------
 
-fn is_stream_scrolled_to_bottom(element: &HtmlElement, threshold_px: i32) -> bool {
-    let distance = element.scroll_height() - element.scroll_top() - element.client_height();
-    distance <= threshold_px.max(0)
-}
-
-fn scroll_stream_to_bottom(element: &HtmlElement) -> i32 {
-    element.set_scroll_top(element.scroll_height());
-    element.scroll_top()
-}
-
 pub(crate) fn matches_search_query(event: &LogEvent, query: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -889,35 +652,6 @@ pub(crate) fn matches_search_query(event: &LogEvent, query: &str) -> bool {
     .any(|v| v.to_ascii_lowercase().contains(query))
 }
 
-pub(crate) fn build_stream_chunks(events: &[LogEvent]) -> Vec<StreamChunk> {
-    let mut chunks: Vec<StreamChunk> = Vec::new();
-    for event in events {
-        let normalized = event.message.trim_end_matches('\n').to_owned();
-        if let Some(last) = chunks.last_mut() {
-            if last.device_id == event.device_id
-                && last.source == event.source
-                && last.channel == event.channel
-                && should_merge_stream_chunk(last, event)
-            {
-                last.ended_at = event.ts;
-                last.level = merge_level(&last.level, &event.level);
-                last.lines.push(normalized);
-                continue;
-            }
-        }
-        chunks.push(StreamChunk {
-            device_id: event.device_id.clone(),
-            source: event.source.clone(),
-            channel: event.channel.clone(),
-            level: event.level.clone(),
-            started_at: event.ts,
-            ended_at: event.ts,
-            lines: vec![normalized],
-        });
-    }
-    chunks
-}
-
 pub(crate) fn trim_buffered_events(events: &mut Vec<LogEvent>, max_events: usize) {
     if events.len() > max_events {
         let drain = events.len() - max_events;
@@ -928,37 +662,6 @@ pub(crate) fn trim_buffered_events(events: &mut Vec<LogEvent>, max_events: usize
 fn visible_buffered_events(events: &[LogEvent], max_events: usize) -> Vec<LogEvent> {
     let start = events.len().saturating_sub(max_events);
     events[start..].to_vec()
-}
-
-fn should_merge_stream_chunk(chunk: &StreamChunk, event: &LogEvent) -> bool {
-    let is_structured = matches!(event.source, LogSource::System | LogSource::Job)
-        || matches!(event.channel, LogChannel::System);
-    if is_structured {
-        return false;
-    }
-    event
-        .ts
-        .signed_duration_since(chunk.ended_at)
-        .num_seconds()
-        .abs()
-        <= 2
-}
-
-fn merge_level(left: &LogLevel, right: &LogLevel) -> LogLevel {
-    if severity_rank(right) > severity_rank(left) {
-        right.clone()
-    } else {
-        left.clone()
-    }
-}
-
-fn severity_rank(level: &LogLevel) -> u8 {
-    match level {
-        LogLevel::Debug => 0,
-        LogLevel::Info => 1,
-        LogLevel::Warn => 2,
-        LogLevel::Error => 3,
-    }
 }
 
 fn matches_stream_filter(event: &LogEvent, filter: &StreamFilter) -> bool {
@@ -989,35 +692,14 @@ pub(crate) fn format_source_label(source: &LogSource) -> &'static str {
     }
 }
 
-fn format_stream_source(source: &LogSource, channel: &LogChannel) -> String {
-    let source_label = format_source_label(source);
-    let channel_label = match channel {
-        LogChannel::Stdout => "stdout",
-        LogChannel::Stderr => "stderr",
-        LogChannel::System => "system",
-    };
-    if matches!(source, LogSource::System | LogSource::Job) || matches!(channel, LogChannel::System)
-    {
-        source_label.to_owned()
-    } else {
-        format!("{source_label}/{channel_label}")
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Stream terminal view
 // ---------------------------------------------------------------------------
 
 fn view_stream_terminal(
-    all_chunks: &[StreamChunk],
-    visible_chunks: &[StreamChunk],
-    stream_window: StreamWindow,
-    stream_container_ref: NodeRef,
-    on_stream_scroll: Callback<Event>,
-    on_stream_select_start: Callback<Event>,
-    on_stream_mouse_up: Callback<MouseEvent>,
-    on_stream_key_up: Callback<KeyboardEvent>,
-    selection_lock_active: bool,
+    stream_events: &[LogEvent],
+    scroll_to_bottom_revision: u32,
+    on_bottom_state_change: Callback<bool>,
     logs_fullscreen: bool,
 ) -> Html {
     html! {
@@ -1025,228 +707,18 @@ fn view_stream_terminal(
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-white/5 px-4 py-3">
                 <div class="flex flex-wrap items-center gap-2">
                     <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-100">{"stream"}</span>
-                    <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-300">{format!("{} chunks", all_chunks.len())}</span>
+                    <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-300">{format!("{} events", stream_events.len())}</span>
                 </div>
-                <span class="font-mono text-xs text-slate-400">{
-                    if selection_lock_active { "merged terminal view · selection frozen" } else { "merged terminal view" }
-                }</span>
+                <span class="font-mono text-xs text-slate-400">{"xterm incremental stream"}</span>
             </div>
-            <div
-                ref={stream_container_ref}
-                class={classes!(
-                    "min-w-0", "overflow-auto", "px-4", "py-4",
-                    "font-mono", "text-sm", "text-slate-100",
-                    "[overflow-anchor:none]",
-                    if logs_fullscreen { Some("max-h-[calc(100vh-14rem)]") } else { Some("max-h-[70vh]") }
-                )}
-                onscroll={on_stream_scroll}
-                onselectstart={on_stream_select_start}
-                onmouseup={on_stream_mouse_up}
-                onkeyup={on_stream_key_up}
-            >
-                <div style={format!("height: {}px;", stream_window.top_padding_px.max(0))}></div>
-                {
-                    for visible_chunks.iter().enumerate().map(|(i, chunk)| {
-                        let idx = stream_window.start_index + i;
-                        html! {
-                            <div class={classes!(if idx > 0 { Some("mt-4 border-t border-white/10 pt-4") } else { None })}>
-                                <div class="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
-                                    <div class="flex flex-wrap items-center gap-2">
-                                        <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 font-mono text-xs font-medium text-slate-200">{chunk.device_id.clone()}</span>
-                                        <span class={stream_badge_class(&chunk.channel)}>{format_stream_source(&chunk.source, &chunk.channel)}</span>
-                                        <span class={stream_level_class(&chunk.level)}>{format!("{:?}", chunk.level)}</span>
-                                    </div>
-                                    <span>{
-                                        if chunk.started_at == chunk.ended_at {
-                                            chunk.started_at.to_rfc3339()
-                                        } else {
-                                            format!("{} -> {}", chunk.started_at.to_rfc3339(), chunk.ended_at.to_rfc3339())
-                                        }
-                                    }</span>
-                                </div>
-                                <pre class="m-0 min-w-0 whitespace-pre-wrap break-all text-sm text-slate-100">
-                                    {render_stream_chunk_body(chunk)}
-                                </pre>
-                            </div>
-                        }
-                    })
-                }
-                <div style={format!("height: {}px;", stream_window.bottom_padding_px.max(0))}></div>
-            </div>
+            <XtermTerminal
+                events={stream_events.to_vec()}
+                {scroll_to_bottom_revision}
+                {on_bottom_state_change}
+                {logs_fullscreen}
+            />
         </div>
     }
-}
-
-fn render_stream_chunk_body(chunk: &StreamChunk) -> Html {
-    if should_plain_render_stream_chunk(chunk) {
-        let text = chunk
-            .lines
-            .iter()
-            .map(|line| plain_log_text(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return html! { <span class={stream_body_class(&chunk.level)}>{text}</span> };
-    }
-    html! {
-        for chunk.lines.iter().enumerate().map(|(i, line)| html! {
-            <>
-                {if i > 0 { html! {"\n"} } else { Html::default() }}
-                {render_log_message(line, Some(stream_body_class(&chunk.level)))}
-            </>
-        })
-    }
-}
-
-fn should_plain_render_stream_chunk(chunk: &StreamChunk) -> bool {
-    if chunk.lines.len() >= STREAM_CHUNK_PLAIN_RENDER_LINE_THRESHOLD {
-        return true;
-    }
-    chunk.lines.iter().map(|l| l.len()).sum::<usize>() >= STREAM_CHUNK_PLAIN_RENDER_CHAR_THRESHOLD
-}
-
-// ---------------------------------------------------------------------------
-// Virtualization
-// ---------------------------------------------------------------------------
-
-fn compute_stream_window(
-    chunks: &[StreamChunk],
-    scroll_top: i32,
-    viewport_height: i32,
-    overscan_px: i32,
-) -> StreamWindow {
-    if chunks.is_empty() {
-        return StreamWindow {
-            start_index: 0,
-            end_index: 0,
-            top_padding_px: 0,
-            bottom_padding_px: 0,
-        };
-    }
-    if chunks.len() < STREAM_VIRTUALIZATION_MIN_CHUNKS {
-        return StreamWindow {
-            start_index: 0,
-            end_index: chunks.len(),
-            top_padding_px: 0,
-            bottom_padding_px: 0,
-        };
-    }
-    let scroll_start = scroll_top.saturating_sub(overscan_px).max(0);
-    let scroll_end = scroll_top
-        .saturating_add(viewport_height.max(STREAM_CHUNK_BASE_HEIGHT_PX))
-        .saturating_add(overscan_px);
-
-    let estimated_heights: Vec<i32> = chunks.iter().map(estimate_stream_chunk_height).collect();
-    let total_height: i32 = estimated_heights.iter().sum();
-    let mut traversed = 0;
-    let mut start_index = chunks.len();
-    let mut end_index = chunks.len();
-    let mut top_padding_px = 0;
-
-    for (i, &h) in estimated_heights.iter().enumerate() {
-        let next = traversed + h;
-        if start_index == chunks.len() && next >= scroll_start {
-            start_index = i;
-            top_padding_px = traversed;
-        }
-        if next >= scroll_end {
-            end_index = i + 1;
-            break;
-        }
-        traversed = next;
-    }
-    if start_index == chunks.len() {
-        start_index = chunks.len().saturating_sub(1);
-        top_padding_px = total_height - estimated_heights[start_index];
-    }
-    if end_index == chunks.len() {
-        end_index = chunks.len();
-    }
-    let visible_height: i32 = estimated_heights[start_index..end_index].iter().sum();
-    let bottom_padding_px = total_height - top_padding_px - visible_height;
-
-    StreamWindow {
-        start_index,
-        end_index,
-        top_padding_px,
-        bottom_padding_px,
-    }
-}
-
-fn estimate_stream_chunk_height(chunk: &StreamChunk) -> i32 {
-    let plain_render = should_plain_render_stream_chunk(chunk);
-    let line_count = chunk
-        .lines
-        .iter()
-        .map(|line| {
-            let rendered = if plain_render {
-                plain_log_text(line)
-            } else {
-                visible_log_text(line)
-            };
-            estimate_visual_line_count(&rendered)
-        })
-        .sum::<usize>()
-        .max(1) as i32;
-    STREAM_CHUNK_BASE_HEIGHT_PX + (line_count * STREAM_CHUNK_LINE_HEIGHT_PX)
-}
-
-fn estimate_visual_line_count(line: &str) -> usize {
-    let chars = line.chars().count().max(1);
-    chars.div_ceil(STREAM_WRAP_WIDTH_CHARS)
-}
-
-// ---------------------------------------------------------------------------
-// Anchor save / restore
-// ---------------------------------------------------------------------------
-
-fn capture_stream_anchor(chunks: &[StreamChunk], scroll_top: i32) -> Option<StreamAnchor> {
-    if chunks.is_empty() {
-        return None;
-    }
-    let target = scroll_top.max(0);
-    let mut traversed = 0;
-    for chunk in chunks {
-        let h = estimate_stream_chunk_height(chunk);
-        let next = traversed + h;
-        if target < next {
-            return Some(StreamAnchor {
-                device_id: chunk.device_id.clone(),
-                source: chunk.source.clone(),
-                channel: chunk.channel.clone(),
-                started_at: chunk.started_at,
-                offset_px: target - traversed,
-            });
-        }
-        traversed = next;
-    }
-    chunks.last().map(|c| StreamAnchor {
-        device_id: c.device_id.clone(),
-        source: c.source.clone(),
-        channel: c.channel.clone(),
-        started_at: c.started_at,
-        offset_px: 0,
-    })
-}
-
-fn restore_stream_anchor_scroll_top(chunks: &[StreamChunk], anchor: &StreamAnchor) -> Option<i32> {
-    let mut traversed = 0;
-    for chunk in chunks {
-        if chunk.device_id == anchor.device_id
-            && chunk.source == anchor.source
-            && chunk.channel == anchor.channel
-            && chunk.started_at == anchor.started_at
-        {
-            return Some(traversed + anchor.offset_px.max(0));
-        }
-        traversed += estimate_stream_chunk_height(chunk);
-    }
-    None
-}
-
-fn has_active_text_selection() -> bool {
-    window()
-        .and_then(|w| w.get_selection().ok().flatten())
-        .is_some_and(|sel| !String::from(sel.to_string()).trim().is_empty())
 }
 
 fn set_page_scroll_locked(locked: bool) {
@@ -1258,6 +730,39 @@ fn set_page_scroll_locked(locked: bool) {
             let _ = style.remove_property("overflow");
         }
     }
+}
+
+fn append_stream_ws_query(
+    base_ws_url: Option<String>,
+    stream_filter: &StreamFilter,
+    search_query: &str,
+) -> Option<String> {
+    let mut url = base_ws_url?;
+    let mut params = Vec::new();
+
+    match stream_filter {
+        StreamFilter::All => {}
+        StreamFilter::DeviceLogs => params.push("structured_only=false".to_owned()),
+        StreamFilter::Structured => params.push("structured_only=true".to_owned()),
+        StreamFilter::Source(source) => {
+            params.push(format!("source={}", urlencoding::encode(format_source_label(source))));
+            params.push("structured_only=false".to_owned());
+        }
+    }
+
+    let trimmed_search = search_query.trim();
+    if !trimmed_search.is_empty() {
+        params.push(format!("search={}", urlencoding::encode(trimmed_search)));
+    }
+
+    if params.is_empty() {
+        return Some(url);
+    }
+
+    let joiner = if url.contains('?') { '&' } else { '?' };
+    url.push(joiner);
+    url.push_str(&params.join("&"));
+    Some(url)
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,46 +801,6 @@ fn filter_button_class(active: bool) -> Classes {
     toggle_button_class(active)
 }
 
-fn stream_badge_class(channel: &LogChannel) -> &'static str {
-    match channel {
-        LogChannel::Stdout => {
-            "inline-flex rounded-full bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-300"
-        }
-        LogChannel::Stderr => {
-            "inline-flex rounded-full bg-red-700/15 px-3 py-1.5 text-xs font-medium text-red-300"
-        }
-        LogChannel::System => {
-            "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-300"
-        }
-    }
-}
-
-fn stream_level_class(level: &LogLevel) -> &'static str {
-    match level {
-        LogLevel::Error => {
-            "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-300"
-        }
-        LogLevel::Warn => {
-            "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-200"
-        }
-        LogLevel::Info => {
-            "inline-flex rounded-full bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-200"
-        }
-        LogLevel::Debug => {
-            "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-300"
-        }
-    }
-}
-
-fn stream_body_class(level: &LogLevel) -> &'static str {
-    match level {
-        LogLevel::Error => "text-red-300",
-        LogLevel::Warn => "text-amber-200",
-        LogLevel::Info => "text-slate-100",
-        LogLevel::Debug => "text-slate-300",
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1347,7 +812,7 @@ mod tests {
 
     fn sample_event(index: usize, message: impl Into<String>) -> LogEvent {
         LogEvent {
-            ts: Utc
+            ts: chrono::Utc
                 .timestamp_opt(index as i64, 0)
                 .single()
                 .expect("valid timestamp"),
@@ -1386,203 +851,26 @@ mod tests {
     }
 
     #[test]
-    fn merges_sustained_streaming_logs_into_shared_chunks() {
-        let events = vec![
-            sample_event(0, "boot line 1"),
-            sample_event(1, "boot line 2"),
-            sample_event(2, "boot line 3"),
-        ];
-        let chunks = build_stream_chunks(&events);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].lines.len(), 3);
+    fn append_stream_ws_query_adds_source_and_search_filters() {
+        let url = append_stream_ws_query(
+            Some("ws://localhost/api/ws?device_id=board-alpha".into()),
+            &StreamFilter::Source(LogSource::Serial),
+            "boot failed",
+        )
+        .expect("ws url");
+
+        assert!(url.contains("device_id=board-alpha"));
+        assert!(url.contains("source=serial"));
+        assert!(url.contains("structured_only=false"));
+        assert!(url.contains("search=boot%20failed"));
     }
 
     #[test]
-    fn does_not_merge_adjacent_events_from_different_devices() {
-        let mut beta = sample_event(1, "boot line 2");
-        beta.device_id = "board-beta".into();
-        let events = vec![sample_event(0, "boot line 1"), beta];
+    fn append_stream_ws_query_omits_extra_filters_for_all_streams() {
+        let url = append_stream_ws_query(Some("ws://localhost/api/ws".into()), &StreamFilter::All, "")
+            .expect("ws url");
 
-        let chunks = build_stream_chunks(&events);
-
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].device_id, "board-alpha");
-        assert_eq!(chunks[1].device_id, "board-beta");
-    }
-
-    #[test]
-    fn virtualizes_large_static_logs_to_an_overscanned_slice() {
-        let chunks: Vec<StreamChunk> = (0..1_200)
-            .map(|i| StreamChunk {
-                device_id: format!("board-{i}"),
-                source: LogSource::Serial,
-                channel: LogChannel::Stdout,
-                level: LogLevel::Info,
-                started_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
-                ended_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
-                lines: vec![format!("line {i}")],
-            })
-            .collect();
-        let window = compute_stream_window(&chunks, 12_000, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
-        assert!(window.start_index > 0);
-        assert!(window.end_index < chunks.len());
-        assert!(window.end_index - window.start_index < chunks.len());
-        assert!(window.top_padding_px > 0);
-        assert!(window.bottom_padding_px > 0);
-    }
-
-    #[test]
-    fn keeps_moderate_chunk_sets_fully_rendered_to_avoid_scroll_gaps() {
-        let chunks: Vec<StreamChunk> = (0..500)
-            .map(|i| StreamChunk {
-                device_id: format!("board-{i}"),
-                source: LogSource::Serial,
-                channel: LogChannel::Stdout,
-                level: LogLevel::Info,
-                started_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
-                ended_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
-                lines: vec![format!("line {i}")],
-            })
-            .collect();
-
-        let window = compute_stream_window(&chunks, 12_000, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
-
-        assert_eq!(window.start_index, 0);
-        assert_eq!(window.end_index, chunks.len());
-        assert_eq!(window.top_padding_px, 0);
-        assert_eq!(window.bottom_padding_px, 0);
-    }
-
-    #[test]
-    fn keeps_small_chunk_sets_fully_rendered() {
-        let chunks: Vec<StreamChunk> = (0..4)
-            .map(|i| StreamChunk {
-                device_id: format!("board-{i}"),
-                source: LogSource::Serial,
-                channel: LogChannel::Stdout,
-                level: LogLevel::Info,
-                started_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
-                ended_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
-                lines: vec![format!("line {i}")],
-            })
-            .collect();
-        let window =
-            compute_stream_window(&chunks, 999_999, 720, STREAM_VIRTUALIZATION_OVERSCAN_PX);
-        assert_eq!(window.start_index, 0);
-        assert_eq!(window.end_index, chunks.len());
-        assert_eq!(window.top_padding_px, 0);
-        assert_eq!(window.bottom_padding_px, 0);
-    }
-
-    #[test]
-    fn long_wrapped_lines_increase_estimated_chunk_height() {
-        let short = StreamChunk {
-            device_id: "board-alpha".into(),
-            source: LogSource::Serial,
-            channel: LogChannel::Stdout,
-            level: LogLevel::Info,
-            started_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            ended_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            lines: vec!["short".into()],
-        };
-        let long = StreamChunk {
-            lines: vec!["x".repeat(STREAM_WRAP_WIDTH_CHARS * 3)],
-            ..short.clone()
-        };
-        assert!(estimate_stream_chunk_height(&long) > estimate_stream_chunk_height(&short));
-    }
-
-    #[test]
-    fn rich_render_height_ignores_hidden_ansi_and_prefix_text() {
-        let rendered = StreamChunk {
-            device_id: "board-alpha".into(),
-            source: LogSource::Serial,
-            channel: LogChannel::Stdout,
-            level: LogLevel::Info,
-            started_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            ended_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            lines: vec!["\u{1b}[36m[I]\u{1b}[0m worker.loop: boot completed".into()],
-        };
-        let plain = StreamChunk {
-            lines: vec!["boot completed".into()],
-            ..rendered.clone()
-        };
-
-        assert_eq!(
-            estimate_stream_chunk_height(&rendered),
-            estimate_stream_chunk_height(&plain)
-        );
-    }
-
-    #[test]
-    fn restores_scroll_top_from_anchor_after_prefix_chunks_drop() {
-        let chunks: Vec<StreamChunk> = (0..4)
-            .map(|i| StreamChunk {
-                device_id: format!("board-{i}"),
-                source: LogSource::Serial,
-                channel: LogChannel::Stdout,
-                level: LogLevel::Info,
-                started_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
-                ended_at: Utc.timestamp_opt(i, 0).single().expect("valid"),
-                lines: vec![format!("line {i}")],
-            })
-            .collect();
-        let anchor = capture_stream_anchor(&chunks, estimate_stream_chunk_height(&chunks[0]) + 8)
-            .expect("anchor captured");
-        let restored =
-            restore_stream_anchor_scroll_top(&chunks[1..], &anchor).expect("anchor restored");
-        assert_eq!(restored, 8);
-    }
-
-    #[test]
-    fn anchor_returns_none_when_chunk_is_gone() {
-        let chunks = vec![StreamChunk {
-            device_id: "board-alpha".into(),
-            source: LogSource::Serial,
-            channel: LogChannel::Stdout,
-            level: LogLevel::Info,
-            started_at: Utc.timestamp_opt(1, 0).single().expect("valid"),
-            ended_at: Utc.timestamp_opt(1, 0).single().expect("valid"),
-            lines: vec!["line 1".into()],
-        }];
-        let anchor = StreamAnchor {
-            device_id: "board-alpha".into(),
-            source: LogSource::Serial,
-            channel: LogChannel::Stdout,
-            started_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            offset_px: 12,
-        };
-        assert_eq!(restore_stream_anchor_scroll_top(&chunks, &anchor), None);
-    }
-
-    #[test]
-    fn large_chunks_switch_to_plain_rendering() {
-        let chunk = StreamChunk {
-            device_id: "board-alpha".into(),
-            source: LogSource::Serial,
-            channel: LogChannel::Stdout,
-            level: LogLevel::Info,
-            started_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            ended_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            lines: (0..STREAM_CHUNK_PLAIN_RENDER_LINE_THRESHOLD)
-                .map(|i| format!("line {i}"))
-                .collect(),
-        };
-        assert!(should_plain_render_stream_chunk(&chunk));
-    }
-
-    #[test]
-    fn small_chunks_keep_rich_rendering() {
-        let chunk = StreamChunk {
-            device_id: "board-alpha".into(),
-            source: LogSource::Serial,
-            channel: LogChannel::Stdout,
-            level: LogLevel::Info,
-            started_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            ended_at: Utc.timestamp_opt(0, 0).single().expect("valid"),
-            lines: vec!["boot ok".into(), "ready".into()],
-        };
-        assert!(!should_plain_render_stream_chunk(&chunk));
+        assert_eq!(url, "ws://localhost/api/ws");
     }
 
     #[test]

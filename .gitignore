@@ -10,3 +10,5 @@ bazel-testlogs
 bazel-hyz-web
 devices.yaml
 .device-registry.yaml
+node_modules
+dist
