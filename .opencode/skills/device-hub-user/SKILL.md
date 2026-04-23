@@ -1,6 +1,6 @@
 ---
 name: device-hub-user
-description: Use the local Device Hub service as an API-first operator: inspect devices, run supported actions, review job evidence, and filter logs for debugging.
+description: Use the local Device Hub service as an API-first operator, including inspect devices, run supported actions, review job evidence, and inspect filtered live or historical logs.
 license: MIT
 compatibility: opencode
 metadata:
@@ -13,14 +13,14 @@ metadata:
 
 - Help users operate the local Device Hub service primarily through its HTTP API.
 - Check whether the backend is running before attempting device actions.
-- Guide or perform common flows: list devices, inspect one device, start an action, watch job status, review evidence, filter logs, and rerun a job.
+- Guide or perform common flows: list devices, inspect one device, start an action, watch job status, inspect live or historical logs, review evidence, and rerun a job.
 - Keep responses grounded in the actual service responses and supported actions.
 
 ## When to use me
 
 - The user wants to use Device Hub as an operator rather than modify its code.
 - The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, `serial.tail`, or `serial.write`.
-- The user wants to look at job evidence, filtered logs, timeout behavior, or rerun a previous job.
+- The user wants to look at job evidence, filtered logs, live streams, timeout behavior, or rerun a previous job.
 - The user reports that the local API is unavailable and wants help checking service health.
 
 ## Service endpoints
@@ -81,7 +81,33 @@ curl -s http://127.0.0.1:3000/api/jobs/<job-id>/events
 curl -s http://127.0.0.1:3000/api/jobs/<job-id>/evidence
 ```
 
-6. Filter job events for debugging
+6. Watch live events over WebSocket
+
+Examples:
+
+```text
+ws://127.0.0.1:3000/api/ws?device_id=<device-id>
+ws://127.0.0.1:3000/api/ws?device_id=<device-id>&source=serial
+ws://127.0.0.1:3000/api/ws?device_id=<device-id>&source=ssh&search=timeout
+ws://127.0.0.1:3000/api/ws?device_id=<device-id>&structured_only=true
+```
+
+Supported WebSocket filters:
+
+- `device_id=<device-id>`
+- `job_id=<job-id>`
+- `since=<RFC3339 timestamp>`
+- `source=ssh|serial|jlink|system|job`
+- `level=debug|info|warn|error`
+- `search=<case-insensitive substring match against message, device_id, job_id, source, channel, level>`
+- `structured_only=true|false`
+
+Notes:
+
+- The stream sends raw `LogEvent` JSON objects.
+- `serial.tail` preserves terminal control bytes such as carriage returns so terminal-style clients can render the stream faithfully.
+
+7. Filter job events for debugging
 
 ```bash
 curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial"
@@ -96,20 +122,20 @@ Supported filters:
 - `level=debug|info|warn|error`
 - `search=<case-insensitive substring match against message, device_id, job_id, source, channel, level>`
 
-7. Download artifacts when needed
+8. Download artifacts when needed
 
 ```bash
 curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/job.json
 curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/events.ndjson
 ```
 
-8. Rerun a job with the same inputs
+9. Rerun a job with the same inputs
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/api/jobs/<job-id>/rerun
 ```
 
-9. Cancel a running job
+10. Cancel a running job
 
 ```bash
 curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
@@ -139,6 +165,7 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 7. For follow-up inspection, prefer this order:
 
 - `/api/jobs/<job-id>` for status
+- `/api/ws?...` for live filtered streaming when the user is actively watching output
 - `/api/jobs/<job-id>/events?source=...&level=...&search=...` for targeted debugging
 - `/api/jobs/<job-id>/evidence` for summary and artifacts
 - `/api/jobs/<job-id>/events` for full history
@@ -175,7 +202,7 @@ Next: <useful next step or none>
 - If the backend is down, say so clearly and help restart or diagnose it before issuing device commands.
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
 - Treat `serial.write` as a short-lived job that confirms bytes were sent, not as the place to inspect device output.
-- For AI-driven debugging, prefer concise API queries and filtered event endpoints over UI walkthroughs.
+- For AI-driven debugging, prefer concise API queries, filtered WebSocket streams, and filtered event endpoints over UI walkthroughs.
 
 ## Customization notes
 

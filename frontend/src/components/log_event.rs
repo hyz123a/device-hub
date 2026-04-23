@@ -118,6 +118,7 @@ pub(crate) fn render_log_message(message: &str, fallback_class: Option<&'static 
     render_ansi_segments(&body_segments)
 }
 
+#[cfg(test)]
 pub(crate) fn plain_log_text(message: &str) -> String {
     if !contains_ansi_escape(message) {
         return message.to_owned();
@@ -129,6 +130,7 @@ pub(crate) fn plain_log_text(message: &str) -> String {
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn visible_log_text(message: &str) -> String {
     analyze_message(message).body
 }
