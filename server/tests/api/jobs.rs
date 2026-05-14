@@ -1127,6 +1127,150 @@ async fn clear_event_cache_drops_only_in_memory_replay_events() {
 }
 
 #[tokio::test]
+async fn get_events_filters_current_cache_by_multiple_devices_search_any_and_relative_since() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "case \"$*\" in *192.168.1.100*) printf 'factory_reset start\nKEY_UNBIND fired\nalpha noise\n' ;; *192.168.1.102*) printf 'camera reset ignored\nmixed noise\n' ;; esac\nexit 0",
+    );
+    let app = spawn_app_with_config(multi_ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let alpha: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("alpha debug".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid alpha job json");
+    let mixed: Job = app
+        .post_action(
+            "board-mixed",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("mixed debug".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid mixed job json");
+    app.wait_for_job_status(&alpha.id, JobStatus::Succeeded)
+        .await;
+    app.wait_for_job_status(&mixed.id, JobStatus::Succeeded)
+        .await;
+    let _ = wait_for_job_events(&app, &alpha.id, 6).await;
+    let _ = wait_for_job_events(&app, &mixed.id, 5).await;
+
+    let events: Vec<device_hub_shared::LogEvent> = app
+        .get_events(
+            "device_id=board-alpha,board-mixed&source=ssh&search_any=factory_reset,KEY_UNBIND&since=5m",
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid events json");
+    let messages = events
+        .iter()
+        .map(|event| event.message.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(messages.contains(&"factory_reset start"));
+    assert!(messages.contains(&"KEY_UNBIND fired"));
+    assert!(!messages.contains(&"alpha noise"));
+    assert!(!messages.contains(&"camera reset ignored"));
+
+    let reset_events: Vec<device_hub_shared::LogEvent> = app
+        .get_events("device_id=board-alpha,board-mixed&search=reset&since=5m")
+        .await
+        .json()
+        .await
+        .expect("invalid reset events json");
+    let reset_messages = reset_events
+        .iter()
+        .map(|event| event.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(reset_messages.contains(&"factory_reset start"));
+    assert!(reset_messages.contains(&"camera reset ignored"));
+    assert!(!reset_messages.contains(&"KEY_UNBIND fired"));
+}
+
+#[tokio::test]
+async fn get_events_filters_with_rfc3339_since_and_regex() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "printf 'before reset\nfactory_reset start\nfactory_reset end\n'\nexit 0",
+    );
+    let app = spawn_app_with_config(ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("reset test".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+    app.wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+    let job_events = wait_for_job_events(&app, &created.id, 7).await;
+    let since = job_events
+        .iter()
+        .find(|event| event.message == "factory_reset start")
+        .expect("missing factory_reset start")
+        .ts
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+
+    let events: Vec<device_hub_shared::LogEvent> = app
+        .get_events(&format!(
+            "device_id=board-alpha&search_regex=factory_reset%20(start|end)&since={since}"
+        ))
+        .await
+        .json()
+        .await
+        .expect("invalid events json");
+    let messages = events
+        .iter()
+        .map(|event| event.message.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(messages, vec!["factory_reset start", "factory_reset end"]);
+}
+
+#[tokio::test]
+async fn get_events_rejects_invalid_regex() {
+    let app = spawn_app().await;
+
+    let response = app.get_events("search_regex=[").await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error json");
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error string")
+            .contains("invalid search_regex")
+    );
+}
+
+#[tokio::test]
 async fn cancel_job_marks_running_job_as_cancelled() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let script = make_fake_ssh(tempdir.path(), "sleep 5");

@@ -128,6 +128,19 @@ impl TestApp {
             .expect("failed to execute request")
     }
 
+    pub async fn get_events(&self, query: &str) -> reqwest::Response {
+        let suffix = if query.trim().is_empty() {
+            String::new()
+        } else {
+            format!("?{query}")
+        };
+        self.api_client
+            .get(self.endpoint(&format!("/api/events{suffix}")))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
     pub async fn clear_event_cache(&self) -> reqwest::Response {
         self.api_client
             .delete(self.endpoint("/api/events"))
