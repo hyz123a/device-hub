@@ -13,7 +13,7 @@ metadata:
 
 - Help users operate the local Device Hub service primarily through its HTTP API.
 - Check whether the backend is running before attempting device actions.
-- Guide or perform common flows: list devices, inspect one device, start an action, watch job status, inspect live or historical logs, review evidence, and rerun a job.
+- Guide or perform common flows: list devices, inspect one device, start an action, watch job status, inspect live or historical logs, clear the in-memory log cache, review evidence, and rerun a job.
 - Keep responses grounded in the actual service responses and supported actions.
 
 ## When to use me
@@ -21,6 +21,7 @@ metadata:
 - The user wants to use Device Hub as an operator rather than modify its code.
 - The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, `serial.tail`, or `serial.write`.
 - The user wants to look at job evidence, filtered logs, live streams, timeout behavior, or rerun a previous job.
+- The user wants to clear or flush log cache without deleting persisted job evidence or artifacts.
 - The user reports that the local API is unavailable and wants help checking service health.
 
 ## Service endpoints
@@ -129,13 +130,25 @@ curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/job.json
 curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/events.ndjson
 ```
 
-9. Rerun a job with the same inputs
+9. Clear the in-memory log cache
+
+```bash
+curl -s -X DELETE http://127.0.0.1:3000/api/events
+```
+
+Notes:
+
+- This flushes only the server's in-memory event cache used for live replay.
+- It does not delete persisted job evidence, job metadata, `events.ndjson`, or adapter artifacts.
+- Use `/api/jobs/<job-id>/evidence` or artifact downloads when historical evidence must remain inspectable after the flush.
+
+10. Rerun a job with the same inputs
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/api/jobs/<job-id>/rerun
 ```
 
-10. Cancel a running job
+11. Cancel a running job
 
 ```bash
 curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
@@ -170,9 +183,15 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 - `/api/jobs/<job-id>/evidence` for summary and artifacts
 - `/api/jobs/<job-id>/events` for full history
 
-8. If the user wants another attempt, use the rerun endpoint instead of reconstructing arguments manually when possible.
-9. Prefer filtered event queries over downloading artifacts when the goal is quick debugging.
-10. Report outcomes in operator language: device, action, job ID, current status, key evidence, and any next step.
+8. If the user asks to clear or flush logs, distinguish between memory cache and persisted evidence:
+
+- Use `DELETE /api/events` to flush the in-memory event cache.
+- Do not imply this deletes `/api/jobs/<job-id>/evidence` or artifact files.
+- After flushing, reconnecting to `/api/ws` will not replay the cleared in-memory events, but persisted job evidence remains available.
+
+9. If the user wants another attempt, use the rerun endpoint instead of reconstructing arguments manually when possible.
+10. Prefer filtered event queries over downloading artifacts when the goal is quick debugging.
+11. Report outcomes in operator language: device, action, job ID, current status, key evidence, and any next step.
 
 ## What not to include
 
@@ -202,6 +221,7 @@ Next: <useful next step or none>
 - If the backend is down, say so clearly and help restart or diagnose it before issuing device commands.
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
 - Treat `serial.write` as a short-lived job that confirms bytes were sent, not as the place to inspect device output.
+- Treat log cache flushing as an in-memory replay cleanup only; never describe it as evidence deletion.
 - For AI-driven debugging, prefer concise API queries, filtered WebSocket streams, and filtered event endpoints over UI walkthroughs.
 
 ## Customization notes

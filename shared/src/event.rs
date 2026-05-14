@@ -23,6 +23,11 @@ pub struct EventFilter {
     pub structured_only: Option<bool>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogCacheClearResponse {
+    pub cleared_events: usize,
+}
+
 impl EventFilter {
     pub fn matches(&self, event: &LogEvent) -> bool {
         let device_ok = self
@@ -42,9 +47,9 @@ impl EventFilter {
             .level
             .as_ref()
             .is_none_or(|level| level == &event.level);
-        let structured_ok = self.structured_only.is_none_or(|structured_only| {
-            event_is_structured(event) == structured_only
-        });
+        let structured_ok = self
+            .structured_only
+            .is_none_or(|structured_only| event_is_structured(event) == structured_only);
         let search_ok = self
             .search
             .as_deref()

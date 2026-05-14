@@ -4,13 +4,16 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     response::IntoResponse,
 };
+use chrono::{DateTime, Duration, Utc};
 use futures::{SinkExt, StreamExt};
+use regex::Regex;
 use serde::Deserialize;
 
 use crate::{app::AppState, error::AppError};
 use device_hub_shared::{
     ActionRequest, BoardProfile, DiscoveredJlinkProbe, DiscoveredSerialPort, EventFilter, Job,
-    JobEvidence, JobStatus, JobSummary, LogChannel, LogEvent, LogLevel, LogSource,
+    JobEvidence, JobStatus, JobSummary, LogCacheClearResponse, LogChannel, LogEvent, LogLevel,
+    LogSource,
 };
 
 pub async fn root() -> Json<serde_json::Value> {
@@ -160,11 +163,43 @@ pub async fn get_job_events(
     )))
 }
 
+pub async fn get_events(
+    State(state): State<AppState>,
+    Query(query): Query<GlobalEventsQuery>,
+) -> Result<Json<Vec<LogEvent>>, AppError> {
+    let filter = GlobalEventFilter::try_from(query)?;
+    Ok(Json(
+        state
+            .events
+            .snapshot(&EventFilter::default())
+            .into_iter()
+            .filter(|event| filter.matches(event))
+            .collect(),
+    ))
+}
+
+pub async fn clear_event_cache(State(state): State<AppState>) -> Json<LogCacheClearResponse> {
+    Json(LogCacheClearResponse {
+        cleared_events: state.use_cases.clear_event_cache(),
+    })
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct JobEventsQuery {
     pub source: Option<LogSource>,
     pub level: Option<LogLevel>,
     pub search: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct GlobalEventsQuery {
+    pub device_id: Option<String>,
+    pub source: Option<LogSource>,
+    pub level: Option<LogLevel>,
+    pub search: Option<String>,
+    pub search_any: Option<String>,
+    pub search_regex: Option<String>,
+    pub since: Option<String>,
 }
 
 pub async fn cancel_job(
@@ -295,6 +330,172 @@ fn filter_job_events(events: Vec<LogEvent>, query: &JobEventsQuery) -> Vec<LogEv
         .into_iter()
         .filter(|event| filter.matches(event))
         .collect()
+}
+
+struct GlobalEventFilter {
+    device_ids: Vec<String>,
+    source: Option<LogSource>,
+    level: Option<LogLevel>,
+    search: Option<String>,
+    search_any: Vec<String>,
+    search_regex: Option<Regex>,
+    since: Option<DateTime<Utc>>,
+}
+
+impl TryFrom<GlobalEventsQuery> for GlobalEventFilter {
+    type Error = AppError;
+
+    fn try_from(query: GlobalEventsQuery) -> Result<Self, Self::Error> {
+        Ok(Self {
+            device_ids: split_csv(query.device_id),
+            source: query.source,
+            level: query.level,
+            search: normalize_search(query.search),
+            search_any: split_csv(query.search_any)
+                .into_iter()
+                .map(|term| term.to_ascii_lowercase())
+                .collect(),
+            search_regex: compile_search_regex(query.search_regex)?,
+            since: parse_since(query.since)?,
+        })
+    }
+}
+
+impl GlobalEventFilter {
+    fn matches(&self, event: &LogEvent) -> bool {
+        let device_ok =
+            self.device_ids.is_empty() || self.device_ids.iter().any(|id| id == &event.device_id);
+        let source_ok = self
+            .source
+            .as_ref()
+            .is_none_or(|source| source == &event.source);
+        let level_ok = self
+            .level
+            .as_ref()
+            .is_none_or(|level| level == &event.level);
+        let since_ok = self.since.is_none_or(|since| event.ts >= since);
+        let search_text = searchable_event_text(event);
+        let search_text_lower = search_text.to_ascii_lowercase();
+        let search_ok = self
+            .search
+            .as_deref()
+            .is_none_or(|term| search_text_lower.contains(term));
+        let search_any_ok = self.search_any.is_empty()
+            || self
+                .search_any
+                .iter()
+                .any(|term| search_text_lower.contains(term));
+        let regex_ok = self
+            .search_regex
+            .as_ref()
+            .is_none_or(|regex| regex.is_match(&search_text));
+
+        device_ok && source_ok && level_ok && since_ok && search_ok && search_any_ok && regex_ok
+    }
+}
+
+fn split_csv(value: Option<String>) -> Vec<String> {
+    value
+        .as_deref()
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn compile_search_regex(value: Option<String>) -> Result<Option<Regex>, AppError> {
+    let Some(pattern) = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    Regex::new(pattern)
+        .map(Some)
+        .map_err(|error| AppError::BadRequest(format!("invalid search_regex: {error}")))
+}
+
+fn parse_since(value: Option<String>) -> Result<Option<DateTime<Utc>>, AppError> {
+    let Some(raw) = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    if let Some(duration) = parse_relative_since(raw)? {
+        return Ok(Some(Utc::now() - duration));
+    }
+
+    DateTime::parse_from_rfc3339(raw)
+        .map(|ts| Some(ts.with_timezone(&Utc)))
+        .map_err(|error| AppError::BadRequest(format!("invalid since: {error}")))
+}
+
+fn parse_relative_since(raw: &str) -> Result<Option<Duration>, AppError> {
+    let Some(unit) = raw.chars().last() else {
+        return Ok(None);
+    };
+    let multiplier = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        _ => return Ok(None),
+    };
+    let amount = &raw[..raw.len() - unit.len_utf8()];
+    if amount.is_empty() || !amount.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(AppError::BadRequest(
+            "invalid since: relative values must look like 30s, 5m, or 2h".into(),
+        ));
+    }
+    let amount = amount
+        .parse::<i64>()
+        .map_err(|error| AppError::BadRequest(format!("invalid since: {error}")))?;
+    Ok(Some(Duration::seconds(amount * multiplier)))
+}
+
+fn searchable_event_text(event: &LogEvent) -> String {
+    format!(
+        "{} {} {} {} {} {}",
+        event.message,
+        event.device_id,
+        event.job_id,
+        log_source_label(&event.source),
+        log_channel_label(&event.channel),
+        log_level_label(&event.level)
+    )
+}
+
+fn log_source_label(source: &LogSource) -> &'static str {
+    match source {
+        LogSource::Ssh => "ssh",
+        LogSource::Serial => "serial",
+        LogSource::Jlink => "jlink",
+        LogSource::System => "system",
+        LogSource::Job => "job",
+    }
+}
+
+fn log_channel_label(channel: &LogChannel) -> &'static str {
+    match channel {
+        LogChannel::Stdout => "stdout",
+        LogChannel::Stderr => "stderr",
+        LogChannel::System => "system",
+    }
+}
+
+fn log_level_label(level: &LogLevel) -> &'static str {
+    match level {
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+    }
 }
 
 fn ws_event_filter(query: WsQuery) -> EventFilter {

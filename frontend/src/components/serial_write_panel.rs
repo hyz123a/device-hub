@@ -43,7 +43,12 @@ pub fn serial_write_panel(props: &SerialWritePanelProps) -> Html {
         let pending_action = pending_action.clone();
         let serial_write_input = serial_write_input.clone();
         Callback::from(move |event: KeyboardEvent| {
-            if event.ctrl_key() && event.key() == "Enter" && !*pending_action {
+            let has_modifier = event.shift_key()
+                || event.ctrl_key()
+                || event.alt_key()
+                || event.meta_key()
+                || event.get_modifier_state("Shift");
+            if event.key() == "Enter" && !has_modifier && !*pending_action {
                 event.prevent_default();
                 trigger_serial_write(
                     device_id.clone(),
@@ -80,7 +85,7 @@ pub fn serial_write_panel(props: &SerialWritePanelProps) -> Html {
             <label class="grid gap-2 text-sm text-slate-300">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                     <span>{"Serial input"}</span>
-                    <span class="font-mono text-xs text-slate-500">{"Ctrl+Enter = Send line"}</span>
+                    <span class="font-mono text-xs text-slate-500">{"Enter = Send line · Shift+Enter = New line"}</span>
                 </div>
                 <textarea
                     class="min-h-28 w-full rounded-2xl border border-white/8 bg-black/25 px-4 py-3 font-mono text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"

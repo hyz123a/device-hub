@@ -1,6 +1,6 @@
 use device_hub_shared::{
     ActionRequest, BoardProfile, Device, DeviceDetail, DiscoveredJlinkProbe, DiscoveredSerialPort,
-    Job, JobEvidence, LogEvent,
+    Job, JobEvidence, LogCacheClearResponse, LogEvent,
 };
 use gloo_net::http::{Request, Response};
 use serde::Deserialize;
@@ -102,6 +102,14 @@ pub async fn list_jobs(device_id: Option<&str>) -> Result<Vec<Job>, String> {
 
 pub async fn get_job_events(job_id: &str) -> Result<Vec<LogEvent>, String> {
     let response = Request::get(&format!("{API_PREFIX}/jobs/{job_id}/events"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn clear_event_cache() -> Result<LogCacheClearResponse, String> {
+    let response = Request::delete(&format!("{API_PREFIX}/events"))
         .send()
         .await
         .map_err(|err| err.to_string())?;

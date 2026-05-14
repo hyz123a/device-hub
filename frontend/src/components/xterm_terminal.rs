@@ -177,7 +177,10 @@ mod tests {
 
     fn sample_event(index: i64, device_id: &str, message: &str) -> LogEvent {
         LogEvent {
-            ts: Utc.timestamp_opt(index, 0).single().expect("valid timestamp"),
+            ts: Utc
+                .timestamp_opt(index, 0)
+                .single()
+                .expect("valid timestamp"),
             device_id: device_id.into(),
             job_id: "job-1".into(),
             source: LogSource::Serial,

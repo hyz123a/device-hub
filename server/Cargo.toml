@@ -13,6 +13,7 @@ device-hub-adapter-serial = { path = "../adapters/serial" }
 device-hub-adapter-ssh = { path = "../adapters/ssh" }
 device-hub-shared = { path = "../shared" }
 futures.workspace = true
+regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
