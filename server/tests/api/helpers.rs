@@ -128,6 +128,14 @@ impl TestApp {
             .expect("failed to execute request")
     }
 
+    pub async fn clear_event_cache(&self) -> reqwest::Response {
+        self.api_client
+            .delete(self.endpoint("/api/events"))
+            .send()
+            .await
+            .expect("failed to execute request")
+    }
+
     pub async fn get_serial_ports(&self) -> reqwest::Response {
         self.api_client
             .get(self.endpoint("/api/host/serial-ports"))

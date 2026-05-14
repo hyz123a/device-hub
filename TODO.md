@@ -15,6 +15,28 @@
 - [x] Migrate `frontend` styling to Tailwind CSS by scanning `frontend/src/**/*.rs`, compiling a generated stylesheet, and switching `frontend/index.html` to load it
 
 ## Next
+- [ ] Add global event query API with richer filters
+  - Support `GET /api/events` against the current server event cache.
+  - Filters should include `device_id`, `source`, `level`, `search`, `search_any`, `search_regex`, and `since`.
+  - `device_id` should support multiple devices, e.g. `device_id=homebase1,camera1`.
+  - `search_any` should support multi-keyword OR matching, e.g. `reset,key,factory_reset,button_reset,KEY_UNBIND`.
+  - `since` should accept both RFC3339 timestamps and relative windows such as `5m`, `30s`, and `2h`.
+  - Regex search should use Rust `regex` semantics over event fields, not Elasticsearch/Lucene query DSL semantics.
+- [ ] Add active tail discovery and explicit tail reuse mode
+  - Device detail should expose the currently active serial tail, including `job_id` and `active_since`.
+  - Prefer a runtime/status structure that can later also represent active SSH tails or device lock ownership.
+  - This should remove the need to manually scan `/api/jobs` after errors such as `port already in use by an active serial.tail job`.
+  - `serial.tail` should support an explicit reuse mode so callers can reuse the active tail instead of failing when the port is already open.
+  - Prefer an opt-in request shape such as `reuse=true` to preserve the normal "start action creates a new job" contract.
+  - Response should make reuse explicit, e.g. `already_running=true` with the reused `job_id`.
+- [ ] Add common event presets
+  - Build presets on top of the global event query API.
+  - Support presets such as `reset`, `bind`, `websocket`, `http2`, and `crash`.
+  - Presets should expand into maintained search terms or regexes, e.g. `preset=reset` matching reset/key/factory_reset/button_reset/FW_BIND_EVENT_RESET.
+- [ ] Add event timeline summary endpoint
+  - Build on the same filters as `GET /api/events` and return compact chronological entries.
+  - The output should help answer "did this happen?" questions without requiring the operator to read raw logs.
+  - Example shape: timestamp/offset, device, source, level, and concise message.
 - [x] Add an implfuture-style Vite bundle for `xterm.js` and switch the log panel to a terminal-like visual renderer focused on presentation quality
 - [x] Refactor `server` toward a real hexagonal architecture by introducing explicit ports/use cases and removing direct core dependencies on concrete adapters
 - [x] Add artifact export/download flow for completed jobs

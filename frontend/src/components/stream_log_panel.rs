@@ -3,13 +3,15 @@ use std::collections::HashSet;
 use device_hub_shared::{LogChannel, LogEvent, LogLevel, LogSource};
 use gloo_timers::callback::Timeout;
 use wasm_bindgen::{JsCast, closure::Closure};
-use web_sys::{ErrorEvent, Event, HtmlInputElement, HtmlSelectElement, MessageEvent, WebSocket, window};
+use wasm_bindgen_futures::spawn_local;
+use web_sys::{
+    ErrorEvent, Event, HtmlInputElement, HtmlSelectElement, MessageEvent, WebSocket, window,
+};
 use yew::prelude::*;
 
+use crate::api;
 use crate::components::{
-    log_event::LogEventCard,
-    serial_write_panel::SerialWritePanel,
-    xterm_terminal::XtermTerminal,
+    log_event::LogEventCard, serial_write_panel::SerialWritePanel, xterm_terminal::XtermTerminal,
 };
 
 const EVENT_PAGE_SIZE: usize = 50;
@@ -49,7 +51,6 @@ enum StreamFilter {
     Source(LogSource),
 }
 
-
 #[derive(Properties, PartialEq)]
 pub struct StreamLogPanelProps {
     /// Pre-loaded historical events (e.g. from GET /jobs/:id/events). The
@@ -75,6 +76,9 @@ pub struct StreamLogPanelProps {
     /// Called whenever a WS parse error occurs.
     #[prop_or_default]
     pub on_error: Callback<String>,
+    /// Shows an operator control that clears the server-side in-memory event cache.
+    #[prop_or_default]
+    pub show_clear_cache: bool,
 }
 
 #[function_component(StreamLogPanel)]
@@ -94,6 +98,8 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     let scroll_to_bottom_revision = use_state(|| 0_u32);
     let stream_at_bottom = use_state(|| true);
     let logs_fullscreen = use_state(|| false);
+    let clear_cache_status = use_state(|| Option::<String>::None);
+    let clear_cache_pending = use_state(|| false);
     let socket = use_mut_ref(|| Option::<WsBindings>::None);
 
     let connection = props
@@ -428,6 +434,48 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         })
     };
 
+    let on_clear_cache = {
+        let events = events.clone();
+        let event_store = event_store.clone();
+        let dedup_set = dedup_set.clone();
+        let current_page = current_page.clone();
+        let pending_render = pending_render.clone();
+        let clear_cache_status = clear_cache_status.clone();
+        let clear_cache_pending = clear_cache_pending.clone();
+        Callback::from(move |_| {
+            if *clear_cache_pending {
+                return;
+            }
+            clear_cache_pending.set(true);
+            let events = events.clone();
+            let event_store = event_store.clone();
+            let dedup_set = dedup_set.clone();
+            let current_page = current_page.clone();
+            let pending_render = pending_render.clone();
+            let clear_cache_status = clear_cache_status.clone();
+            let clear_cache_pending = clear_cache_pending.clone();
+            spawn_local(async move {
+                match api::clear_event_cache().await {
+                    Ok(result) => {
+                        pending_render.borrow_mut().take();
+                        event_store.borrow_mut().clear();
+                        dedup_set.borrow_mut().clear();
+                        events.set(Vec::new());
+                        current_page.set(0);
+                        clear_cache_status.set(Some(format!(
+                            "Cleared {} cached events",
+                            result.cleared_events
+                        )));
+                    }
+                    Err(message) => {
+                        clear_cache_status.set(Some(format!("Clear failed: {message}")));
+                    }
+                }
+                clear_cache_pending.set(false);
+            });
+        })
+    };
+
     let on_bottom_state_change = {
         let stream_at_bottom = stream_at_bottom.clone();
         Callback::from(move |at_bottom: bool| stream_at_bottom.set(at_bottom))
@@ -536,6 +584,19 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                 </div>
                 <div class="flex flex-wrap items-center gap-2.5">
                     {
+                        if props.show_clear_cache {
+                            html! {
+                                <button
+                                    class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 font-medium text-red-800 transition hover:bg-red-100 disabled:cursor-default disabled:opacity-55"
+                                    onclick={on_clear_cache}
+                                    disabled={*clear_cache_pending}
+                                >{if *clear_cache_pending { "Clearing..." } else { "Clear cache" }}</button>
+                            }
+                        } else {
+                            Html::default()
+                        }
+                    }
+                    {
                         if *view_mode == LogViewMode::Event {
                             html! {
                                 <>
@@ -564,6 +625,13 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                     >{if *logs_fullscreen { "Exit full screen" } else { "Full screen" }}</button>
                 </div>
             </div>
+            {
+                if let Some(message) = (*clear_cache_status).clone() {
+                    html! { <p class="mb-4 mt-0 text-sm text-ink-muted">{message}</p> }
+                } else {
+                    Html::default()
+                }
+            }
             <div class="min-w-0 grid gap-4">
                 {
                     if events.is_empty() {
@@ -745,7 +813,10 @@ fn append_stream_ws_query(
         StreamFilter::DeviceLogs => params.push("structured_only=false".to_owned()),
         StreamFilter::Structured => params.push("structured_only=true".to_owned()),
         StreamFilter::Source(source) => {
-            params.push(format!("source={}", urlencoding::encode(format_source_label(source))));
+            params.push(format!(
+                "source={}",
+                urlencoding::encode(format_source_label(source))
+            ));
             params.push("structured_only=false".to_owned());
         }
     }
@@ -867,8 +938,9 @@ mod tests {
 
     #[test]
     fn append_stream_ws_query_omits_extra_filters_for_all_streams() {
-        let url = append_stream_ws_query(Some("ws://localhost/api/ws".into()), &StreamFilter::All, "")
-            .expect("ws url");
+        let url =
+            append_stream_ws_query(Some("ws://localhost/api/ws".into()), &StreamFilter::All, "")
+                .expect("ws url");
 
         assert_eq!(url, "ws://localhost/api/ws");
     }

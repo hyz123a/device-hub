@@ -13,7 +13,19 @@ if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
   npm --prefix "$FRONTEND_DIR" ci >&2
 fi
 
-trunk build --config "$FRONTEND_DIR/Trunk.toml" --release --dist "$DIST_DIR" >&2
+TRUNK_BIN=${TRUNK_BIN:-}
+if [ -z "$TRUNK_BIN" ]; then
+  if command -v trunk >/dev/null 2>&1; then
+    TRUNK_BIN=trunk
+  elif [ -x "$HOME/.cargo/bin/trunk" ]; then
+    TRUNK_BIN="$HOME/.cargo/bin/trunk"
+  else
+    printf '%s\n' 'trunk not found. Install it with `cargo install trunk --locked` or source ~/.cargo/env.' >&2
+    exit 127
+  fi
+fi
+
+"$TRUNK_BIN" build --config "$FRONTEND_DIR/Trunk.toml" --release --dist "$DIST_DIR" >&2
 tar -cf "$OUTPUT_BUNDLE" -C "$DIST_DIR" .
 
 printf '%s\n' "$OUTPUT_BUNDLE"

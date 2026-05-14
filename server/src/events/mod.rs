@@ -55,4 +55,11 @@ impl EventBus {
             .cloned()
             .collect()
     }
+
+    pub fn clear_cache(&self) -> usize {
+        let mut buffer = self.buffer.lock().expect("event buffer poisoned");
+        let cleared = buffer.len();
+        buffer.clear();
+        cleared
+    }
 }

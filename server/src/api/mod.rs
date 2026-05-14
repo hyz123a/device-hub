@@ -10,7 +10,8 @@ use serde::Deserialize;
 use crate::{app::AppState, error::AppError};
 use device_hub_shared::{
     ActionRequest, BoardProfile, DiscoveredJlinkProbe, DiscoveredSerialPort, EventFilter, Job,
-    JobEvidence, JobStatus, JobSummary, LogChannel, LogEvent, LogLevel, LogSource,
+    JobEvidence, JobStatus, JobSummary, LogCacheClearResponse, LogChannel, LogEvent, LogLevel,
+    LogSource,
 };
 
 pub async fn root() -> Json<serde_json::Value> {
@@ -158,6 +159,12 @@ pub async fn get_job_events(
         state.events.snapshot(&filter),
         &query,
     )))
+}
+
+pub async fn clear_event_cache(State(state): State<AppState>) -> Json<LogCacheClearResponse> {
+    Json(LogCacheClearResponse {
+        cleared_events: state.use_cases.clear_event_cache(),
+    })
 }
 
 #[derive(Debug, Deserialize, Default)]

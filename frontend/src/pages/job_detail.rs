@@ -149,6 +149,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                         html! { <p class="mb-0 mt-4 text-sm text-red-700">{message}</p> }
                     } else if let Some(job) = (*job).clone() {
                         let job_id = job.id.clone();
+                        let timeout_label = job_timeout_label(&job);
                         html! {
                             <>
                                 <h2 class="mb-2 mt-3 text-3xl font-semibold tracking-tight text-ink">{job.action}</h2>
@@ -156,7 +157,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                                 <div class="mt-4 flex flex-wrap items-center gap-3">
                                     <span class={job_status_class(&job.status)}>{format!("{:?}", job.status)}</span>
                                     <span class={status_class}>{(*connection).clone()}</span>
-                                    <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 font-mono text-xs text-ink-muted">{format!("timeout {}s", job.timeout_secs)}</span>
+                                    <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 font-mono text-xs text-ink-muted">{timeout_label}</span>
                                 </div>
                                 <div class="mt-4 flex flex-wrap gap-3">
                                     <button
@@ -225,6 +226,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                 connection_status={Some((*connection).clone())}
                 on_connection_change={on_connection_change}
                 on_error={on_ws_error}
+                show_clear_cache={true}
             />
         </section>
     }
@@ -252,6 +254,14 @@ fn is_terminal_status(status: &JobStatus) -> bool {
         status,
         JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled
     )
+}
+
+fn job_timeout_label(job: &Job) -> String {
+    if job.timeout_secs == 0 {
+        "no timeout".to_owned()
+    } else {
+        format!("timeout {}s", job.timeout_secs)
+    }
 }
 
 fn render_artifacts(artifacts: &[JobArtifact]) -> Html {

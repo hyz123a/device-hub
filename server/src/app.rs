@@ -151,6 +151,7 @@ async fn build_router_with_components(
         host_discovery,
         jobs.clone(),
         job_manager.clone(),
+        events.clone(),
     );
 
     let state = AppState {
@@ -173,6 +174,7 @@ async fn build_router_with_components(
                 .delete(api::delete_device),
         )
         .route("/jobs", get(api::list_jobs))
+        .route("/events", axum::routing::delete(api::clear_event_cache))
         .route(
             "/devices/{device_id}/actions/{action}",
             post(api::start_action),

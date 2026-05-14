@@ -6,8 +6,10 @@ use device_hub_server::{
     services::job_manager::{ActionPolicy, JobPolicyProvider},
 };
 use device_hub_shared::{
-    ActionRequest, Device, JlinkConfig, Job, JobEvidence, JobStatus, SerialConfig, SshConfig,
+    ActionRequest, Device, JlinkConfig, Job, JobEvidence, JobStatus, LogCacheClearResponse,
+    SerialConfig, SshConfig,
 };
+use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_serial::SerialStream;
 
@@ -360,7 +362,8 @@ async fn serial_tail_streams_device_output() {
         .json()
         .await
         .expect("invalid serial tail job json");
-    app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+    let running_tail = app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+    assert_eq!(running_tail.timeout_secs, 0);
 
     slave
         .write_all(b"boot ok\n")
@@ -368,7 +371,16 @@ async fn serial_tail_streams_device_output() {
         .expect("write serial output");
 
     let tail_events = wait_for_job_events(&app, &tail.id, 5).await;
-    assert!(tail_events.iter().any(|event| event.message.starts_with("boot ok")));
+    assert!(
+        tail_events
+            .iter()
+            .any(|event| event.message.contains("timeout policy: none"))
+    );
+    assert!(
+        tail_events
+            .iter()
+            .any(|event| event.message.starts_with("boot ok"))
+    );
 
     cancel_job_if_running(&app, &tail.id).await;
 }
@@ -458,7 +470,11 @@ async fn serial_write_succeeds_while_serial_tail_is_running() {
     );
 
     let tail_events = wait_for_job_events(&app, &tail.id, 5).await;
-    assert!(tail_events.iter().any(|event| event.message.starts_with("ok")));
+    assert!(
+        tail_events
+            .iter()
+            .any(|event| event.message.starts_with("ok"))
+    );
 
     cancel_job_if_running(&app, &tail.id).await;
 }
@@ -782,8 +798,14 @@ async fn ssh_tail_streams_events_until_cancelled() {
         .wait_for_job_status(&created.id, JobStatus::Running)
         .await;
     assert_eq!(running.action, "ssh.tail");
+    assert_eq!(running.timeout_secs, 0);
 
     let events = wait_for_job_events(&app, &created.id, 5).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message.contains("timeout policy: none"))
+    );
     assert!(
         events
             .iter()
@@ -955,8 +977,7 @@ async fn websocket_source_and_search_filters_only_stream_matching_events() {
     ))
     .await;
 
-    let mut ws =
-        connect_ws(&app, "/api/ws?device_id=board-alpha&source=ssh&search=warn").await;
+    let mut ws = connect_ws(&app, "/api/ws?device_id=board-alpha&source=ssh&search=warn").await;
 
     let alpha_job: Job = app
         .post_action(
@@ -1040,6 +1061,69 @@ async fn websocket_since_replays_only_newer_job_events() {
     assert!(messages.iter().any(|message| message == "line one"));
     assert!(messages.iter().any(|message| message == "line two"));
     assert!(messages.iter().any(|message| message == "warn one"));
+}
+
+#[tokio::test]
+async fn clear_event_cache_drops_only_in_memory_replay_events() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "printf 'cache line one\ncache line two\n'\nexit 0",
+    );
+    let app = spawn_app_with_config(ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    ))
+    .await;
+
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("echo cache".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("invalid job json");
+    let _job = app
+        .wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+    let events = wait_for_job_events(&app, &created.id, 5).await;
+    assert!(events.iter().any(|event| event.message == "cache line one"));
+
+    let clear_response = app.clear_event_cache().await;
+    assert!(clear_response.status().is_success());
+    let cleared: LogCacheClearResponse = clear_response
+        .json()
+        .await
+        .expect("invalid clear response json");
+    assert!(cleared.cleared_events >= events.len());
+
+    let (mut ws, _response) = tokio_tungstenite::connect_async(
+        app.ws_endpoint(&format!("/api/ws?job_id={}", created.id)),
+    )
+    .await
+    .expect("websocket connect");
+    let replay = tokio::time::timeout(std::time::Duration::from_millis(150), ws.next()).await;
+    assert!(
+        replay.is_err(),
+        "cleared cache should not replay old events"
+    );
+
+    let response = app.get_job_evidence(&created.id).await;
+    assert!(response.status().is_success());
+    let evidence: JobEvidence = response.json().await.expect("invalid evidence json");
+    assert!(evidence.summary.headline.contains("ssh.exec succeeded"));
+    assert!(
+        evidence
+            .summary
+            .highlights
+            .iter()
+            .any(|highlight| highlight.contains("captured 2 stdout lines"))
+    );
 }
 
 #[tokio::test]

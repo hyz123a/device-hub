@@ -64,7 +64,7 @@ impl JobManager {
             device_id: device.id.clone(),
             action: action.clone(),
             payload: payload.as_ref().and_then(|request| request.payload.clone()),
-            timeout_secs: policy.timeout.as_secs(),
+            timeout_secs: policy.timeout_secs(),
             status: JobStatus::Pending,
             created_at: now,
             updated_at: now,
@@ -110,28 +110,31 @@ impl JobManager {
                     LogChannel::System,
                     LogLevel::Info,
                     format!(
-                        "timeout policy: {}s; teardown policy: {}",
-                        policy.timeout.as_secs(),
+                        "timeout policy: {}; teardown policy: {}",
+                        policy.timeout_label(),
                         policy.teardown_note
                     ),
                 ));
             }
 
-            let timed_out = tokio::time::timeout(
-                policy.timeout,
-                runner.run(context.clone(), job_for_task, device, action, payload),
-            )
-            .await
-            .is_err();
+            let run = runner.run(context.clone(), job_for_task, device, action, payload);
+            let timed_out = match policy.timeout {
+                Some(timeout) => tokio::time::timeout(timeout, run).await.is_err(),
+                None => {
+                    run.await;
+                    false
+                }
+            };
 
             if timed_out {
                 if let Some(running) = context.jobs.get(&job_id) {
+                    let timeout_secs = policy.timeout_secs();
                     context.events.publish(adapter_event_with_source(
                         &running,
                         LogSource::System,
                         LogChannel::System,
                         LogLevel::Warn,
-                        format!("action timed out after {}s", policy.timeout.as_secs()),
+                        format!("action timed out after {timeout_secs}s"),
                     ));
                     context.events.publish(adapter_event_with_source(
                         &running,
@@ -145,7 +148,7 @@ impl JobManager {
                         &context.events,
                         &context.artifacts,
                         &running,
-                        format!("action timed out after {}s", policy.timeout.as_secs()),
+                        format!("action timed out after {timeout_secs}s"),
                     );
                 }
             }
@@ -230,16 +233,33 @@ impl JobManager {
 
 #[derive(Clone, Copy)]
 pub struct ActionPolicy {
-    timeout: Duration,
+    timeout: Option<Duration>,
     teardown_note: &'static str,
 }
 
 impl ActionPolicy {
     pub fn new(timeout: Duration, teardown_note: &'static str) -> Self {
         Self {
-            timeout,
+            timeout: Some(timeout),
             teardown_note,
         }
+    }
+
+    pub fn without_timeout(teardown_note: &'static str) -> Self {
+        Self {
+            timeout: None,
+            teardown_note,
+        }
+    }
+
+    fn timeout_secs(&self) -> u64 {
+        self.timeout.map_or(0, |timeout| timeout.as_secs())
+    }
+
+    fn timeout_label(&self) -> String {
+        self.timeout
+            .map(|timeout| format!("{}s", timeout.as_secs()))
+            .unwrap_or_else(|| "none".to_owned())
     }
 }
 
@@ -271,12 +291,10 @@ fn default_action_policy(action: &str) -> ActionPolicy {
             Duration::from_secs(20),
             "teardown: treat the reboot request as fire-and-forget, release the device lock, and rely on reconnect for the next action",
         ),
-        "ssh.tail" => ActionPolicy::new(
-            Duration::from_secs(3600),
+        "ssh.tail" => ActionPolicy::without_timeout(
             "teardown: stop the SSH tail process, release stream resources, and keep captured logs on disk",
         ),
-        "serial.tail" => ActionPolicy::new(
-            Duration::from_secs(3600),
+        "serial.tail" => ActionPolicy::without_timeout(
             "teardown: close the serial stream handle and keep captured logs on disk",
         ),
         "serial.write" => ActionPolicy::new(

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::{
     error::AppError,
+    events::EventBus,
     ports::{DeviceRegistryError, DynDeviceRegistry, DynHostDiscovery, HostDiscoveryError},
     services::job_manager::JobManager,
     storage::job_store::JobStore,
@@ -17,6 +18,7 @@ pub struct AppUseCases {
     host_discovery: DynHostDiscovery,
     jobs: JobStore,
     job_manager: JobManager,
+    events: EventBus,
 }
 
 impl AppUseCases {
@@ -26,6 +28,7 @@ impl AppUseCases {
         host_discovery: DynHostDiscovery,
         jobs: JobStore,
         job_manager: JobManager,
+        events: EventBus,
     ) -> Self {
         Self {
             board_profiles: Arc::new(board_profiles),
@@ -33,6 +36,7 @@ impl AppUseCases {
             host_discovery,
             jobs,
             job_manager,
+            events,
         }
     }
 
@@ -134,6 +138,10 @@ impl AppUseCases {
         self.job_manager
             .start(device, previous.action.clone(), payload)
             .await
+    }
+
+    pub fn clear_event_cache(&self) -> usize {
+        self.events.clear_cache()
     }
 }
 

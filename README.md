@@ -117,6 +117,7 @@ curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.tail
 ```
 
 When the device has `ssh.default_log_path` configured, `ssh.tail` can omit the payload and uses that default path. Supplying a payload still overrides the device default for that job.
+Device log jobs (`ssh.tail` and `serial.tail`) do not time out by default; stop them with `DELETE /api/jobs/{job_id}` when the stream is no longer needed.
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.write \

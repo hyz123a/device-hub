@@ -261,7 +261,7 @@ GET    /api
 WS     /api/ws
 ```
 
-`ssh.tail` and `serial.tail` follow the same job lifecycle as any other action; use `DELETE /api/jobs/{job_id}` to stop them.
+`ssh.tail` and `serial.tail` follow the same job lifecycle as any other action, but they do not time out by default; use `DELETE /api/jobs/{job_id}` to stop them.
 
 ### WebSocket `/api/ws`
 

@@ -43,9 +43,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                     match api::list_devices().await {
                         Ok(mut devices) => {
                             devices.sort_by(|left, right| {
-                                left.label
-                                    .cmp(&right.label)
-                                    .then(left.id.cmp(&right.id))
+                                left.label.cmp(&right.label).then(left.id.cmp(&right.id))
                             });
                             available_devices.set(Some(devices));
                             device_options_error.set(None);
@@ -196,6 +194,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                     serial_write_device_id={props.device_id.clone()}
                     on_connection_change={on_connection_change}
                     on_error={on_error}
+                    show_clear_cache={true}
                 />
             </div>
         </section>
