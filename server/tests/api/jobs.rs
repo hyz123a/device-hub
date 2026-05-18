@@ -6,8 +6,8 @@ use device_hub_server::{
     services::job_manager::{ActionPolicy, JobPolicyProvider},
 };
 use device_hub_shared::{
-    ActionRequest, Device, JlinkConfig, Job, JobEvidence, JobStatus, LogCacheClearResponse,
-    SerialConfig, SshConfig,
+    ActionRequest, ActionStartResponse, Device, DeviceDetail, JlinkConfig, Job, JobEvidence,
+    JobStatus, LogCacheClearResponse, SerialConfig, SshConfig,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -194,6 +194,65 @@ async fn cancel_job_if_running(app: &crate::helpers::TestApp, job_id: &str) {
         let cancelled = app.cancel_job(job_id).await;
         assert!(cancelled.status().is_success());
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn device_detail_exposes_active_serial_tail_runtime() {
+    let (app, _slaves) = spawn_serial_test_app(1).await;
+    let tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid serial tail job json");
+    let running = app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+
+    let response = app
+        .api_client
+        .get(app.endpoint("/api/devices/board-alpha"))
+        .send()
+        .await
+        .expect("failed to get device detail");
+
+    assert!(response.status().is_success());
+    let detail: DeviceDetail = response.json().await.expect("invalid device detail json");
+    assert_eq!(detail.runtime.active_tails.len(), 1);
+    let active_tail = &detail.runtime.active_tails[0];
+    assert_eq!(active_tail.action, "serial.tail");
+    assert_eq!(active_tail.job_id, running.id);
+    assert_eq!(active_tail.active_since, running.created_at);
+
+    cancel_job_if_running(&app, &running.id).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_tail_reuse_returns_active_job_without_opening_the_port_again() {
+    let (app, _slaves) = spawn_serial_test_app(1).await;
+    let tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid serial tail job json");
+    let running = app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+
+    let response = app
+        .api_client
+        .post(app.endpoint("/api/devices/board-alpha/actions/serial.tail?reuse=true"))
+        .json(&Option::<ActionRequest>::None)
+        .send()
+        .await
+        .expect("failed to reuse serial tail");
+
+    assert!(response.status().is_success());
+    let reused: ActionStartResponse = response.json().await.expect("invalid reuse response json");
+    assert_eq!(reused.job.id, running.id);
+    assert!(reused.already_running);
+    assert_eq!(reused.job.status, JobStatus::Running);
+
+    cancel_job_if_running(&app, &running.id).await;
 }
 
 #[tokio::test]

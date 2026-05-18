@@ -20,7 +20,7 @@ metadata:
 
 - The user wants to use Device Hub as an operator rather than modify its code.
 - The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, `serial.tail`, or `serial.write`.
-- The user wants to look at job evidence, filtered logs, live streams, timeout behavior, or rerun a previous job.
+- The user wants to look at job evidence, filtered logs, recent device logs without a job id, live streams, timeout behavior, or rerun a previous job.
 - The user wants to clear or flush log cache without deleting persisted job evidence or artifacts.
 - The user reports that the local API is unavailable and wants help checking service health.
 
@@ -50,6 +50,12 @@ curl -s http://127.0.0.1:3000/api/devices
 curl -s http://127.0.0.1:3000/api/devices/<device-id>
 ```
 
+Notes:
+
+- Device detail includes `runtime.active_tails`.
+- An active serial tail appears with `action`, `job_id`, and `active_since`.
+- Check this before scanning `/api/jobs` when you only need to find the current live tail for a device.
+
 4. Start an action
 
 Examples:
@@ -69,10 +75,21 @@ curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.tai
   -H 'content-type: application/json' \
   -d 'null'
 
+curl -s -X POST 'http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.tail?reuse=true' \
+  -H 'content-type: application/json' \
+  -d 'null'
+
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.write \
   -H 'content-type: application/json' \
   -d '{"payload":"help\n"}'
 ```
+
+Notes:
+
+- Action start responses include the normal job fields plus `already_running`.
+- For ordinary starts, `already_running` is `false`.
+- For `serial.tail?reuse=true`, Device Hub returns the active tail job and sets `already_running=true` instead of opening the serial port again.
+- Without `reuse=true`, starting `serial.tail` keeps the normal contract: it attempts to create a new job.
 
 5. Check job status and events
 
@@ -123,14 +140,40 @@ Supported filters:
 - `level=debug|info|warn|error`
 - `search=<case-insensitive substring match against message, device_id, job_id, source, channel, level>`
 
-8. Download artifacts when needed
+8. Query recent cached events without a job id
+
+```bash
+curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&source=serial&since=5m"
+curl -s "http://127.0.0.1:3000/api/events?device_id=homebase1,camera1&search=history&since=5m"
+curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&search_any=reset,key,factory_reset,button_reset,KEY_UNBIND&since=5m"
+curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&search_regex=wifi_link%7CKEEP_NORMAL&since=5m"
+```
+
+Supported filters:
+
+- `device_id=<device-id>` or comma-separated ids such as `device_id=homebase1,camera1`
+- `source=ssh|serial|jlink|system|job`
+- `level=debug|info|warn|error`
+- `search=<case-insensitive substring match against message, device_id, job_id, source, channel, level>`
+- `search_any=<comma-separated case-insensitive OR terms>`
+- `search_regex=<Rust regex matched against event text>`
+- `since=<RFC3339 timestamp | relative window like 30s, 5m, or 2h>`
+
+Notes:
+
+- `GET /api/events` reads only the current in-memory event cache.
+- It is useful when the operator knows the device and recent time window but not the job id.
+- Regex uses Rust `regex` syntax, not Elasticsearch or Lucene query DSL.
+- Invalid regex patterns return a bad request instead of deleting or mutating logs.
+
+9. Download artifacts when needed
 
 ```bash
 curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/job.json
 curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/events.ndjson
 ```
 
-9. Clear the in-memory log cache
+10. Clear the in-memory log cache
 
 ```bash
 curl -s -X DELETE http://127.0.0.1:3000/api/events
@@ -142,13 +185,13 @@ Notes:
 - It does not delete persisted job evidence, job metadata, `events.ndjson`, or adapter artifacts.
 - Use `/api/jobs/<job-id>/evidence` or artifact downloads when historical evidence must remain inspectable after the flush.
 
-10. Rerun a job with the same inputs
+11. Rerun a job with the same inputs
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/api/jobs/<job-id>/rerun
 ```
 
-11. Cancel a running job
+12. Cancel a running job
 
 ```bash
 curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
@@ -167,11 +210,13 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 - `serial.write` requires a payload string.
 - `serial.write` payloads may be raw text, newline-terminated commands, or control characters like Ctrl-C.
 - `ssh.reboot` does not require a payload.
+- `serial.tail?reuse=true` reuses an active tail and returns `already_running=true`; use it when the user explicitly wants the existing stream.
 
 5. Start the action and capture the returned `job_id`.
 6. If the user wants to send serial input and observe the response, prefer this order:
 
-- Start `serial.tail` first.
+- Inspect `GET /api/devices/<device-id>` and check `runtime.active_tails` for an active `serial.tail`.
+- If no tail is active, start `serial.tail`; if a tail is active, reuse that `job_id`.
 - Start `serial.write` with the intended payload.
 - Inspect the tail job events for device output and the write job for write confirmation.
 
@@ -179,6 +224,7 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 
 - `/api/jobs/<job-id>` for status
 - `/api/ws?...` for live filtered streaming when the user is actively watching output
+- `/api/events?...` for recent cached logs when the job id is unknown
 - `/api/jobs/<job-id>/events?source=...&level=...&search=...` for targeted debugging
 - `/api/jobs/<job-id>/evidence` for summary and artifacts
 - `/api/jobs/<job-id>/events` for full history
@@ -222,6 +268,8 @@ Next: <useful next step or none>
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
 - Treat `serial.write` as a short-lived job that confirms bytes were sent, not as the place to inspect device output.
 - Treat log cache flushing as an in-memory replay cleanup only; never describe it as evidence deletion.
+- Treat `GET /api/events` as a cache query, not persisted evidence; use job evidence or artifacts for durable history.
+- For regex event searches, use Rust `regex` syntax and URL-encode special characters such as `|`.
 - For AI-driven debugging, prefer concise API queries, filtered WebSocket streams, and filtered event endpoints over UI walkthroughs.
 
 ## Customization notes

@@ -3,7 +3,7 @@ use yew::prelude::*;
 use yew_router::prelude::*;
 
 use crate::{api, app::Route};
-use device_hub_shared::{DeviceDetail, Job, JobStatus};
+use device_hub_shared::{ActiveTailStatus, DeviceDetail, Job, JobStatus};
 
 #[derive(Properties, PartialEq)]
 pub struct DeviceDetailProps {
@@ -18,8 +18,8 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
     let tail_path = use_state(String::new);
     let jlink_firmware_path = use_state(String::new);
     let pending_action = use_state(|| Option::<String>::None);
-    let running_ssh_tail = use_state(|| Option::<Job>::None);
-    let running_serial_tail = use_state(|| Option::<Job>::None);
+    let running_ssh_tail = use_state(|| Option::<ActiveTailStatus>::None);
+    let running_serial_tail = use_state(|| Option::<ActiveTailStatus>::None);
     let navigator = use_navigator();
 
     {
@@ -31,18 +31,10 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
         use_effect_with(props.device_id.clone(), move |_| {
             spawn_local(async move {
                 match api::get_device(&device_id).await {
-                    Ok(value) => detail.set(Some(value)),
-                    Err(err) => error.set(Some(err)),
-                }
-
-                match api::list_jobs(Some(&device_id)).await {
-                    Ok(jobs) => {
-                        running_ssh_tail.set(find_running_tail_job(&jobs, &device_id, "ssh.tail"));
-                        running_serial_tail.set(find_running_tail_job(
-                            &jobs,
-                            &device_id,
-                            "serial.tail",
-                        ));
+                    Ok(value) => {
+                        running_ssh_tail.set(find_active_tail(&value, "ssh.tail"));
+                        running_serial_tail.set(find_active_tail(&value, "serial.tail"));
+                        detail.set(Some(value));
                     }
                     Err(err) => error.set(Some(err)),
                 }
@@ -173,7 +165,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                 pending_action.set(Some(action_label.to_owned()));
                                 spawn_local(async move {
                                     let result = if let Some(active_job) = active_job {
-                                        api::cancel_job(&active_job.id).await
+                                        api::cancel_job(&active_job.job_id).await
                                     } else {
                                         api::start_action(&device_id, "ssh.tail", payload).await
                                     };
@@ -185,7 +177,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                             if job.status == JobStatus::Cancelled {
                                                 running_ssh_tail.set(None);
                                             } else {
-                                                running_ssh_tail.set(Some(job.clone()));
+                                                running_ssh_tail.set(Some(active_tail_from_job(&job)));
                                                 if let Some(navigator) = navigator {
                                                     navigator.push(&Route::JobDetail { job_id: job.id });
                                                 }
@@ -262,7 +254,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                         {
                                             if let Some(job) = running_ssh_tail_value.clone() {
                                                 let navigator = navigator.clone();
-                                                let job_id = job.id.clone();
+                                                let job_id = job.job_id.clone();
                                                 let on_open_ssh_tail = Callback::from(move |_| {
                                                     if let Some(navigator) = navigator.clone() {
                                                         navigator.push(&Route::JobDetail { job_id: job_id.clone() });
@@ -355,7 +347,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                 pending_action.set(Some(action_label.to_owned()));
                                 spawn_local(async move {
                                     let result = if let Some(active_job) = active_job {
-                                        api::cancel_job(&active_job.id).await
+                                        api::cancel_job(&active_job.job_id).await
                                     } else {
                                         api::start_action(&device_id, "serial.tail", None).await
                                     };
@@ -367,7 +359,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                             if job.status == JobStatus::Cancelled {
                                                 running_serial_tail.set(None);
                                             } else {
-                                                running_serial_tail.set(Some(job.clone()));
+                                                running_serial_tail.set(Some(active_tail_from_job(&job)));
                                                 if let Some(navigator) = navigator {
                                                     navigator.push(&Route::JobDetail { job_id: job.id });
                                                 }
@@ -397,7 +389,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                         <p class="m-0">
                                             {
                                                 if let Some(job) = running_serial_tail_value.clone() {
-                                                    format!("Serial log streaming is active in {}. Stop it here or open the job page.", job.id)
+                                                    format!("Serial log streaming is active in {} since {}. Stop it here or open the job page.", job.job_id, job.active_since)
                                                 } else {
                                                     "Open the configured serial port as a live log job and follow it on the job page.".to_owned()
                                                 }
@@ -408,7 +400,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                         {
                                             if let Some(job) = running_serial_tail_value.clone() {
                                                 let navigator = navigator.clone();
-                                                let job_id = job.id.clone();
+                                                let job_id = job.job_id.clone();
                                                 let on_open_serial_tail = Callback::from(move |_| {
                                                     if let Some(navigator) = navigator.clone() {
                                                         navigator.push(&Route::JobDetail { job_id: job_id.clone() });
@@ -664,12 +656,19 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
     }
 }
 
-fn find_running_tail_job(jobs: &[Job], device_id: &str, action: &str) -> Option<Job> {
-    jobs.iter()
-        .find(|job| {
-            job.device_id == device_id
-                && job.action == action
-                && matches!(job.status, JobStatus::Pending | JobStatus::Running)
-        })
+fn find_active_tail(detail: &DeviceDetail, action: &str) -> Option<ActiveTailStatus> {
+    detail
+        .runtime
+        .active_tails
+        .iter()
+        .find(|tail| tail.action == action)
         .cloned()
+}
+
+fn active_tail_from_job(job: &Job) -> ActiveTailStatus {
+    ActiveTailStatus {
+        action: job.action.clone(),
+        job_id: job.id.clone(),
+        active_since: job.created_at,
+    }
 }
