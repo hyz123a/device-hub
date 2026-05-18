@@ -22,7 +22,7 @@
   - `search_any` should support multi-keyword OR matching, e.g. `reset,key,factory_reset,button_reset,KEY_UNBIND`.
   - `since` should accept both RFC3339 timestamps and relative windows such as `5m`, `30s`, and `2h`.
   - Regex search should use Rust `regex` semantics over event fields, not Elasticsearch/Lucene query DSL semantics.
-- [ ] Add active tail discovery and explicit tail reuse mode
+- [x] Add active tail discovery and explicit tail reuse mode
   - Device detail should expose the currently active serial tail, including `job_id` and `active_since`.
   - Prefer a runtime/status structure that can later also represent active SSH tails or device lock ownership.
   - This should remove the need to manually scan `/api/jobs` after errors such as `port already in use by an active serial.tail job`.

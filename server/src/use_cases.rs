@@ -1,5 +1,6 @@
 use device_hub_shared::{
-    ActionRequest, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, Job, JobStatus,
+    ActionRequest, ActionStartResponse, ActiveTailStatus, BoardProfile, Device, DeviceDetail,
+    DeviceRuntimeStatus, DiscoveredJlinkProbe, DiscoveredSerialPort, Job, JobStatus,
 };
 use std::sync::Arc;
 
@@ -52,6 +53,11 @@ impl AppUseCases {
 
     pub fn get_device(&self, device_id: &str) -> Result<Device, AppError> {
         self.devices.get(device_id).ok_or(AppError::DeviceNotFound)
+    }
+
+    pub fn get_device_detail(&self, device_id: &str) -> Result<DeviceDetail, AppError> {
+        let device = self.get_device(device_id)?;
+        Ok(device.detail_with_runtime(self.device_runtime_status(device_id)))
     }
 
     pub fn create_device(&self, device: Device) -> Result<Device, AppError> {
@@ -118,11 +124,25 @@ impl AppUseCases {
         device_id: &str,
         action: String,
         payload: Option<ActionRequest>,
-    ) -> Result<Job, AppError> {
+        reuse: bool,
+    ) -> Result<ActionStartResponse, AppError> {
         let device = self.get_device(device_id)?;
         validate_action(&action, &device)?;
         validate_payload(&action, &device, payload.as_ref())?;
-        self.job_manager.start(device, action, payload).await
+        if reuse && action == "serial.tail" {
+            if let Some(job) = find_active_job(&self.jobs, device_id, &action) {
+                return Ok(ActionStartResponse {
+                    job,
+                    already_running: true,
+                });
+            }
+        }
+
+        let job = self.job_manager.start(device, action, payload).await?;
+        Ok(ActionStartResponse {
+            job,
+            already_running: false,
+        })
     }
 
     pub async fn cancel_job(&self, job_id: &str) -> Result<Job, AppError> {
@@ -142,6 +162,26 @@ impl AppUseCases {
 
     pub fn clear_event_cache(&self) -> usize {
         self.events.clear_cache()
+    }
+
+    fn device_runtime_status(&self, device_id: &str) -> DeviceRuntimeStatus {
+        let active_tails = self
+            .jobs
+            .list()
+            .into_iter()
+            .filter(|job| {
+                job.device_id == device_id
+                    && is_tail_action(&job.action)
+                    && matches!(job.status, JobStatus::Pending | JobStatus::Running)
+            })
+            .map(|job| ActiveTailStatus {
+                action: job.action,
+                job_id: job.id,
+                active_since: job.created_at,
+            })
+            .collect();
+
+        DeviceRuntimeStatus { active_tails }
     }
 }
 
@@ -169,6 +209,18 @@ fn ensure_device_has_no_active_jobs(jobs: &JobStore, device_id: &str) -> Result<
     }
 
     Ok(())
+}
+
+fn find_active_job(jobs: &JobStore, device_id: &str, action: &str) -> Option<Job> {
+    jobs.list().into_iter().find(|job| {
+        job.device_id == device_id
+            && job.action == action
+            && matches!(job.status, JobStatus::Pending | JobStatus::Running)
+    })
+}
+
+fn is_tail_action(action: &str) -> bool {
+    matches!(action, "serial.tail" | "ssh.tail")
 }
 
 fn validate_device(device: &Device) -> Result<(), AppError> {

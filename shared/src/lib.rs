@@ -4,10 +4,11 @@ pub mod event;
 pub mod job;
 pub mod profile;
 
-pub use action::{ActionCapability, ActionRequest};
+pub use action::{ActionCapability, ActionRequest, ActionStartResponse};
 pub use device::{
-    Device, DeviceConnectionSummary, DeviceDetail, DiscoveredJlinkProbe, DiscoveredSerialPort,
-    JlinkConfig, SerialConfig, SshConfig, default_ssh_log_path,
+    ActiveTailStatus, Device, DeviceConnectionSummary, DeviceDetail, DeviceRuntimeStatus,
+    DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig, SerialConfig, SshConfig,
+    default_ssh_log_path,
 };
 pub use event::{EventFilter, LogCacheClearResponse, LogChannel, LogEvent, LogLevel, LogSource};
 pub use job::{Job, JobArtifact, JobEvidence, JobStatus, JobSummary};

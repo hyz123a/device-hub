@@ -1,7 +1,7 @@
 use device_hub_server::config::AppConfig;
 use device_hub_shared::{
-    Device, DeviceConnectionSummary, DeviceDetail, DiscoveredJlinkProbe, DiscoveredSerialPort,
-    JlinkConfig, Job, JobStatus, SerialConfig, SshConfig,
+    Device, DeviceConnectionSummary, DeviceDetail, DeviceRuntimeStatus, DiscoveredJlinkProbe,
+    DiscoveredSerialPort, JlinkConfig, Job, JobStatus, SerialConfig, SshConfig,
 };
 
 use crate::helpers::{
@@ -140,6 +140,7 @@ async fn get_device_returns_detail_for_known_device() {
                 has_serial: true,
                 has_jlink: true,
             },
+            runtime: DeviceRuntimeStatus::default(),
         }
     );
 }

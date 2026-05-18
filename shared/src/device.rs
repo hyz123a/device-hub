@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub struct Device {
 pub struct DeviceDetail {
     pub device: Device,
     pub capabilities: DeviceConnectionSummary,
+    pub runtime: DeviceRuntimeStatus,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -20,6 +22,18 @@ pub struct DeviceConnectionSummary {
     pub has_ssh: bool,
     pub has_serial: bool,
     pub has_jlink: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceRuntimeStatus {
+    pub active_tails: Vec<ActiveTailStatus>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveTailStatus {
+    pub action: String,
+    pub job_id: String,
+    pub active_since: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +77,10 @@ pub struct JlinkConfig {
 
 impl Device {
     pub fn detail(&self) -> DeviceDetail {
+        self.detail_with_runtime(DeviceRuntimeStatus::default())
+    }
+
+    pub fn detail_with_runtime(&self, runtime: DeviceRuntimeStatus) -> DeviceDetail {
         DeviceDetail {
             device: self.clone(),
             capabilities: DeviceConnectionSummary {
@@ -70,6 +88,7 @@ impl Device {
                 has_serial: self.serial.is_some(),
                 has_jlink: self.jlink.is_some(),
             },
+            runtime,
         }
     }
 }

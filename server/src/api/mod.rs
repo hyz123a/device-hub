@@ -11,9 +11,9 @@ use serde::Deserialize;
 
 use crate::{app::AppState, error::AppError};
 use device_hub_shared::{
-    ActionRequest, BoardProfile, DiscoveredJlinkProbe, DiscoveredSerialPort, EventFilter, Job,
-    JobEvidence, JobStatus, JobSummary, LogCacheClearResponse, LogChannel, LogEvent, LogLevel,
-    LogSource,
+    ActionRequest, ActionStartResponse, BoardProfile, DiscoveredJlinkProbe, DiscoveredSerialPort,
+    EventFilter, Job, JobEvidence, JobStatus, JobSummary, LogCacheClearResponse, LogChannel,
+    LogEvent, LogLevel, LogSource,
 };
 
 pub async fn root() -> Json<serde_json::Value> {
@@ -69,8 +69,7 @@ pub async fn get_device(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Result<Json<device_hub_shared::DeviceDetail>, AppError> {
-    let device = state.use_cases.get_device(&device_id)?;
-    Ok(Json(device.detail()))
+    Ok(Json(state.use_cases.get_device_detail(&device_id)?))
 }
 
 pub async fn update_device(
@@ -93,13 +92,14 @@ pub async fn delete_device(
 pub async fn start_action(
     State(state): State<AppState>,
     Path((device_id, action)): Path<(String, String)>,
+    Query(query): Query<StartActionQuery>,
     Json(payload): Json<Option<ActionRequest>>,
-) -> Result<Json<Job>, AppError> {
-    let job = state
+) -> Result<Json<ActionStartResponse>, AppError> {
+    let response = state
         .use_cases
-        .start_action(&device_id, action, payload)
+        .start_action(&device_id, action, payload, query.reuse.unwrap_or(false))
         .await?;
-    Ok(Json(job))
+    Ok(Json(response))
 }
 
 pub async fn get_job(
@@ -200,6 +200,11 @@ pub struct GlobalEventsQuery {
     pub search_any: Option<String>,
     pub search_regex: Option<String>,
     pub since: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct StartActionQuery {
+    pub reuse: Option<bool>,
 }
 
 pub async fn cancel_job(

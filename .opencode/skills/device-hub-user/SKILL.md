@@ -50,6 +50,12 @@ curl -s http://127.0.0.1:3000/api/devices
 curl -s http://127.0.0.1:3000/api/devices/<device-id>
 ```
 
+Notes:
+
+- Device detail includes `runtime.active_tails`.
+- An active serial tail appears with `action`, `job_id`, and `active_since`.
+- Check this before scanning `/api/jobs` when you only need to find the current live tail for a device.
+
 4. Start an action
 
 Examples:
@@ -69,10 +75,21 @@ curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.tai
   -H 'content-type: application/json' \
   -d 'null'
 
+curl -s -X POST 'http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.tail?reuse=true' \
+  -H 'content-type: application/json' \
+  -d 'null'
+
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.write \
   -H 'content-type: application/json' \
   -d '{"payload":"help\n"}'
 ```
+
+Notes:
+
+- Action start responses include the normal job fields plus `already_running`.
+- For ordinary starts, `already_running` is `false`.
+- For `serial.tail?reuse=true`, Device Hub returns the active tail job and sets `already_running=true` instead of opening the serial port again.
+- Without `reuse=true`, starting `serial.tail` keeps the normal contract: it attempts to create a new job.
 
 5. Check job status and events
 
@@ -193,11 +210,13 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 - `serial.write` requires a payload string.
 - `serial.write` payloads may be raw text, newline-terminated commands, or control characters like Ctrl-C.
 - `ssh.reboot` does not require a payload.
+- `serial.tail?reuse=true` reuses an active tail and returns `already_running=true`; use it when the user explicitly wants the existing stream.
 
 5. Start the action and capture the returned `job_id`.
 6. If the user wants to send serial input and observe the response, prefer this order:
 
-- Start `serial.tail` first.
+- Inspect `GET /api/devices/<device-id>` and check `runtime.active_tails` for an active `serial.tail`.
+- If no tail is active, start `serial.tail`; if a tail is active, reuse that `job_id`.
 - Start `serial.write` with the intended payload.
 - Inspect the tail job events for device output and the write job for write confirmation.
 
