@@ -15,6 +15,7 @@
 - [x] Migrate `frontend` styling to Tailwind CSS by scanning `frontend/src/**/*.rs`, compiling a generated stylesheet, and switching `frontend/index.html` to load it
 
 ## Next
+- [x] Add `serial.exec` command/expect support with shared execution core, job evidence, and synchronous API response
 - [x] Add global event query API with richer filters
   - Support `GET /api/events` against the current server event cache.
   - Filters should include `device_id`, `source`, `level`, `search`, `search_any`, `search_regex`, and `since`.

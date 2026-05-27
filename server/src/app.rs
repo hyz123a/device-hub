@@ -17,6 +17,7 @@ use crate::{
     services::{
         adapter_action_runner::AdapterActionRunner,
         adapter_host_discovery::AdapterHostDiscovery,
+        adapter_serial_command_executor::AdapterSerialCommandExecutor,
         job_manager::{JobManager, JobPolicyProvider},
     },
     storage::{
@@ -131,10 +132,13 @@ async fn build_router_with_components(
             jlink_adapter.clone(),
         ))
     });
+    let serial_command_executor =
+        Arc::new(AdapterSerialCommandExecutor::new(serial_adapter.clone()));
     let action_runner = Arc::new(AdapterActionRunner::new(
         ssh_adapter,
         jlink_adapter,
         serial_adapter,
+        serial_command_executor.clone(),
     ));
     let frontend = FrontendAssets::load_from_embedded_bundle()
         .expect("failed to load embedded frontend assets");
@@ -152,6 +156,7 @@ async fn build_router_with_components(
         jobs.clone(),
         job_manager.clone(),
         events.clone(),
+        serial_command_executor,
     );
 
     let state = AppState {
@@ -182,6 +187,7 @@ async fn build_router_with_components(
             "/devices/{device_id}/actions/{action}",
             post(api::start_action),
         )
+        .route("/devices/{device_id}/serial/exec", post(api::exec_serial))
         .route("/jobs/{job_id}", get(api::get_job).delete(api::cancel_job))
         .route("/jobs/{job_id}/evidence", get(api::get_job_evidence))
         .route("/jobs/{job_id}/events", get(api::get_job_events))

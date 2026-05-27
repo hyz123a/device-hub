@@ -19,7 +19,7 @@ metadata:
 ## When to use me
 
 - The user wants to use Device Hub as an operator rather than modify its code.
-- The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, `serial.tail`, or `serial.write`.
+- The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, `serial.tail`, `serial.write`, or `serial.exec`.
 - The user wants to look at job evidence, filtered logs, recent device logs without a job id, live streams, timeout behavior, or rerun a previous job.
 - The user wants to clear or flush log cache without deleting persisted job evidence or artifacts.
 - The user reports that the local API is unavailable and wants help checking service health.
@@ -82,6 +82,24 @@ curl -s -X POST 'http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.ta
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.write \
   -H 'content-type: application/json' \
   -d '{"payload":"help\n"}'
+
+curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.exec \
+  -H 'content-type: application/json' \
+  -d '{"payload":"ip route"}'
+
+curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.exec \
+  -H 'content-type: application/json' \
+  -d '{"payload":"{\"command\":\"iwpriv ra0 show psinfo\",\"timeout_secs\":5,\"until\":\"# \"}"}'
+```
+
+5. Execute a serial command and return captured output directly
+
+Use this when the user wants command output without manually inspecting a tail stream.
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/serial/exec \
+  -H 'content-type: application/json' \
+  -d '{"command":"ip route","timeout_secs":5,"until":"# "}'
 ```
 
 Notes:
@@ -90,8 +108,12 @@ Notes:
 - For ordinary starts, `already_running` is `false`.
 - For `serial.tail?reuse=true`, Device Hub returns the active tail job and sets `already_running=true` instead of opening the serial port again.
 - Without `reuse=true`, starting `serial.tail` keeps the normal contract: it attempts to create a new job.
+- `serial.exec` is available as either an asynchronous job action or a synchronous `/serial/exec` API.
+- The synchronous `/serial/exec` response includes `command`, `output`, `matched`, and `timed_out`.
+- Prefer synchronous `/serial/exec` for one-shot commands such as `ip route`, `iwpriv ra0 show psinfo`, or `cat /proc/net/nf_conntrack`.
+- Prefer asynchronous `actions/serial.exec` when durable job evidence and downloadable `output.txt` / `result.json` artifacts are needed.
 
-5. Check job status and events
+6. Check job status and events
 
 ```bash
 curl -s http://127.0.0.1:3000/api/jobs/<job-id>
@@ -99,7 +121,7 @@ curl -s http://127.0.0.1:3000/api/jobs/<job-id>/events
 curl -s http://127.0.0.1:3000/api/jobs/<job-id>/evidence
 ```
 
-6. Watch live events over WebSocket
+7. Watch live events over WebSocket
 
 Examples:
 
@@ -125,7 +147,7 @@ Notes:
 - The stream sends raw `LogEvent` JSON objects.
 - `serial.tail` preserves terminal control bytes such as carriage returns so terminal-style clients can render the stream faithfully.
 
-7. Filter job events for debugging
+8. Filter job events for debugging
 
 ```bash
 curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial"
@@ -140,7 +162,7 @@ Supported filters:
 - `level=debug|info|warn|error`
 - `search=<case-insensitive substring match against message, device_id, job_id, source, channel, level>`
 
-8. Query recent cached events without a job id
+9. Query recent cached events without a job id
 
 ```bash
 curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&source=serial&since=5m"
@@ -166,14 +188,16 @@ Notes:
 - Regex uses Rust `regex` syntax, not Elasticsearch or Lucene query DSL.
 - Invalid regex patterns return a bad request instead of deleting or mutating logs.
 
-9. Download artifacts when needed
+10. Download artifacts when needed
 
 ```bash
 curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/job.json
 curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/events.ndjson
+curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/output.txt
+curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/result.json
 ```
 
-10. Clear the in-memory log cache
+11. Clear the in-memory log cache
 
 ```bash
 curl -s -X DELETE http://127.0.0.1:3000/api/events
@@ -185,13 +209,13 @@ Notes:
 - It does not delete persisted job evidence, job metadata, `events.ndjson`, or adapter artifacts.
 - Use `/api/jobs/<job-id>/evidence` or artifact downloads when historical evidence must remain inspectable after the flush.
 
-11. Rerun a job with the same inputs
+12. Rerun a job with the same inputs
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/api/jobs/<job-id>/rerun
 ```
 
-12. Cancel a running job
+13. Cancel a running job
 
 ```bash
 curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
@@ -209,18 +233,27 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 - `serial.tail` does not require a payload.
 - `serial.write` requires a payload string.
 - `serial.write` payloads may be raw text, newline-terminated commands, or control characters like Ctrl-C.
+- `serial.exec` requires a command. The synchronous API accepts structured JSON: `command`, optional `timeout_secs`, and optional `until`.
+- The asynchronous `actions/serial.exec` endpoint accepts a plain command string in `payload`, or a JSON-encoded `SerialExecRequest` string when timeout or marker matching is needed.
 - `ssh.reboot` does not require a payload.
 - `serial.tail?reuse=true` reuses an active tail and returns `already_running=true`; use it when the user explicitly wants the existing stream.
 
 5. Start the action and capture the returned `job_id`.
-6. If the user wants to send serial input and observe the response, prefer this order:
+6. If the user wants to run a serial command and receive the command output, prefer this order:
+
+- Use `POST /api/devices/<device-id>/serial/exec` with `command`, a bounded `timeout_secs`, and an `until` prompt marker when known.
+- Report `output`, `matched`, and `timed_out` from the response.
+- If `timed_out=true`, include the partial captured output and suggest adjusting `until` or timeout only when useful.
+
+7. If the user wants an auditable serial command run, start `actions/serial.exec` and then inspect job evidence or download `output.txt` / `result.json`.
+8. If the user wants to send serial input during a live interactive session, prefer this order:
 
 - Inspect `GET /api/devices/<device-id>` and check `runtime.active_tails` for an active `serial.tail`.
 - If no tail is active, start `serial.tail`; if a tail is active, reuse that `job_id`.
 - Start `serial.write` with the intended payload.
 - Inspect the tail job events for device output and the write job for write confirmation.
 
-7. For follow-up inspection, prefer this order:
+9. For follow-up inspection, prefer this order:
 
 - `/api/jobs/<job-id>` for status
 - `/api/ws?...` for live filtered streaming when the user is actively watching output
@@ -229,15 +262,15 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 - `/api/jobs/<job-id>/evidence` for summary and artifacts
 - `/api/jobs/<job-id>/events` for full history
 
-8. If the user asks to clear or flush logs, distinguish between memory cache and persisted evidence:
+10. If the user asks to clear or flush logs, distinguish between memory cache and persisted evidence:
 
 - Use `DELETE /api/events` to flush the in-memory event cache.
 - Do not imply this deletes `/api/jobs/<job-id>/evidence` or artifact files.
 - After flushing, reconnecting to `/api/ws` will not replay the cleared in-memory events, but persisted job evidence remains available.
 
-9. If the user wants another attempt, use the rerun endpoint instead of reconstructing arguments manually when possible.
-10. Prefer filtered event queries over downloading artifacts when the goal is quick debugging.
-11. Report outcomes in operator language: device, action, job ID, current status, key evidence, and any next step.
+11. If the user wants another attempt, use the rerun endpoint instead of reconstructing arguments manually when possible.
+12. Prefer filtered event queries over downloading artifacts when the goal is quick debugging.
+13. Report outcomes in operator language: device, action, job ID, current status, key evidence, and any next step.
 
 ## What not to include
 
@@ -261,12 +294,14 @@ Next: <useful next step or none>
 ## Guardrails
 
 - Do not claim a device supports an action unless the API/config confirms it.
-- Do not invent payloads for `ssh.exec` or `serial.write`; ask one short question if the value is missing.
+- Do not invent payloads for `ssh.exec`, `serial.write`, or `serial.exec`; ask one short question if the value is missing.
 - For `ssh.tail`, ask only when the payload is missing and the device does not have `ssh.default_log_path` configured.
 - Prefer using the rerun endpoint for repeat attempts so the same stored inputs are reused.
 - If the backend is down, say so clearly and help restart or diagnose it before issuing device commands.
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
 - Treat `serial.write` as a short-lived job that confirms bytes were sent, not as the place to inspect device output.
+- Treat synchronous `/serial/exec` as the preferred path for one-shot command/expect output.
+- Treat asynchronous `actions/serial.exec` as the preferred path when the user needs durable job evidence.
 - Treat log cache flushing as an in-memory replay cleanup only; never describe it as evidence deletion.
 - Treat `GET /api/events` as a cache query, not persisted evidence; use job evidence or artifacts for durable history.
 - For regex event searches, use Rust `regex` syntax and URL-encode special characters such as `|`.

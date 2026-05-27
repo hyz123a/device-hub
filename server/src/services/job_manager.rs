@@ -301,6 +301,10 @@ fn default_action_policy(action: &str) -> ActionPolicy {
             Duration::from_secs(10),
             "teardown: close the serial write handle, release the device lock, and persist the final job state",
         ),
+        "serial.exec" => ActionPolicy::new(
+            Duration::from_secs(60),
+            "teardown: close the serial exec stream, release the device lock, and persist captured output",
+        ),
         _ => ActionPolicy::new(
             Duration::from_secs(60),
             "teardown: stop the active adapter task and persist the final job state",

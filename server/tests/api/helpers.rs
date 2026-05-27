@@ -12,7 +12,7 @@ use device_hub_server::{
 };
 use device_hub_shared::{
     ActionRequest, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig,
-    Job, JobStatus, LogEvent, SerialConfig, SshConfig,
+    Job, JobStatus, LogEvent, SerialConfig, SerialExecRequest, SshConfig,
 };
 use futures::{StreamExt, future::BoxFuture};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -48,6 +48,19 @@ impl TestApp {
         };
 
         request.send().await.expect("failed to execute request")
+    }
+
+    pub async fn exec_serial(
+        &self,
+        device_id: &str,
+        body: &SerialExecRequest,
+    ) -> reqwest::Response {
+        self.api_client
+            .post(self.endpoint(&format!("/api/devices/{device_id}/serial/exec")))
+            .json(body)
+            .send()
+            .await
+            .expect("failed to execute request")
     }
 
     pub async fn get_job(&self, job_id: &str) -> reqwest::Response {

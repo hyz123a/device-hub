@@ -13,7 +13,7 @@ use crate::{app::AppState, error::AppError};
 use device_hub_shared::{
     ActionRequest, ActionStartResponse, BoardProfile, DiscoveredJlinkProbe, DiscoveredSerialPort,
     EventFilter, Job, JobEvidence, JobStatus, JobSummary, LogCacheClearResponse, LogChannel,
-    LogEvent, LogLevel, LogSource,
+    LogEvent, LogLevel, LogSource, SerialExecRequest, SerialExecResult,
 };
 
 pub async fn root() -> Json<serde_json::Value> {
@@ -100,6 +100,19 @@ pub async fn start_action(
         .start_action(&device_id, action, payload, query.reuse.unwrap_or(false))
         .await?;
     Ok(Json(response))
+}
+
+pub async fn exec_serial(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+    Json(request): Json<SerialExecRequest>,
+) -> Result<Json<SerialExecResult>, AppError> {
+    Ok(Json(
+        state
+            .use_cases
+            .exec_serial_command(&device_id, request)
+            .await?,
+    ))
 }
 
 pub async fn get_job(
@@ -574,6 +587,10 @@ fn build_job_summary(
             .payload
             .as_ref()
             .map(|payload| format!("input: {}", payload.escape_debug())),
+        "serial.exec" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("command: {}", payload.escape_debug())),
         "ssh.reboot" => device.and_then(|device| {
             device
                 .ssh

@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use device_hub_shared::{DiscoveredSerialPort, SerialConfig};
+use device_hub_shared::{DiscoveredSerialPort, SerialConfig, SerialExecRequest, SerialExecResult};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf, split};
@@ -13,6 +13,7 @@ use tokio_serial::{SerialPortBuilderExt, SerialPortType};
 
 const DEFAULT_READ_CHUNK_BYTES: usize = 1024;
 const DEFAULT_MAX_MESSAGE_BYTES: usize = 4096;
+const DEFAULT_EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_FLUSH_TIMEOUT: Duration = Duration::from_millis(40);
 type SerialStreamOpener =
     dyn Fn(&SerialConfig) -> Result<tokio_serial::SerialStream, SerialAdapterError> + Send + Sync;
@@ -151,6 +152,77 @@ impl SerialAdapter {
         stream.write_all(payload).await?;
         stream.flush().await?;
         Ok(payload.len())
+    }
+
+    pub async fn exec(
+        &self,
+        config: &SerialConfig,
+        request: &SerialExecRequest,
+    ) -> Result<SerialExecResult, SerialAdapterError> {
+        if self.lookup_shared_writer(config).is_some() {
+            return Err(SerialAdapterError::Busy {
+                port: config.port.clone(),
+            });
+        }
+
+        let timeout_duration = request
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(DEFAULT_EXEC_TIMEOUT);
+        let deadline = tokio::time::Instant::now() + timeout_duration;
+        let mut stream = (self.opener)(config)?;
+        let input = command_input(&request.command);
+
+        stream.write_all(input.as_bytes()).await?;
+        stream.flush().await?;
+
+        let mut output = String::new();
+        let mut read_buffer = [0_u8; DEFAULT_READ_CHUNK_BYTES];
+        loop {
+            if let Some(marker) = request.until.as_deref().filter(|marker| !marker.is_empty()) {
+                if output.contains(marker) {
+                    return Ok(SerialExecResult {
+                        command: request.command.clone(),
+                        output,
+                        matched: Some(marker.to_owned()),
+                        timed_out: false,
+                    });
+                }
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Ok(SerialExecResult {
+                    command: request.command.clone(),
+                    output,
+                    matched: None,
+                    timed_out: true,
+                });
+            }
+
+            match timeout(deadline - now, stream.read(&mut read_buffer)).await {
+                Ok(result) => {
+                    let read = result?;
+                    if read == 0 {
+                        return Ok(SerialExecResult {
+                            command: request.command.clone(),
+                            output,
+                            matched: None,
+                            timed_out: false,
+                        });
+                    }
+                    output.push_str(&decode_chunk(read_buffer[..read].to_vec()));
+                }
+                Err(_) => {
+                    return Ok(SerialExecResult {
+                        command: request.command.clone(),
+                        output,
+                        matched: None,
+                        timed_out: true,
+                    });
+                }
+            }
+        }
     }
 
     pub fn discover_ports(&self) -> Result<Vec<DiscoveredSerialPort>, SerialAdapterError> {
@@ -311,6 +383,14 @@ fn open_stream(config: &SerialConfig) -> Result<tokio_serial::SerialStream, Seri
 
 fn session_key(config: &SerialConfig) -> String {
     format!("{}:{}", config.port, config.baud)
+}
+
+fn command_input(command: &str) -> String {
+    if command.ends_with('\n') || command.ends_with('\r') {
+        command.to_owned()
+    } else {
+        format!("{command}\n")
+    }
 }
 
 fn push_bytes_into_queue(
