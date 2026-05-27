@@ -4,12 +4,14 @@ use device_hub_adapter_jlink::{
 };
 use device_hub_adapter_serial::SerialAdapter;
 use device_hub_adapter_ssh::{SshAdapter, SshCommand, SshStreamChannel};
-use device_hub_shared::{ActionRequest, Device, Job, LogChannel, LogEvent, LogLevel, LogSource};
+use device_hub_shared::{
+    ActionRequest, Device, Job, LogChannel, LogEvent, LogLevel, LogSource, SerialExecRequest,
+};
 use futures::future::BoxFuture;
 use serde::Serialize;
 
 use crate::{
-    ports::{ActionExecutionContext, ActionRunner},
+    ports::{ActionExecutionContext, ActionRunner, DynSerialCommandExecutor},
     services::job_runtime::{
         adapter_event, adapter_event_with_source, fail_job, fail_job_with_source, succeed_job,
     },
@@ -20,6 +22,7 @@ pub struct AdapterActionRunner {
     ssh_adapter: SshAdapter,
     jlink_adapter: JlinkAdapter,
     serial_adapter: SerialAdapter,
+    serial_command_executor: DynSerialCommandExecutor,
 }
 
 impl AdapterActionRunner {
@@ -27,11 +30,13 @@ impl AdapterActionRunner {
         ssh_adapter: SshAdapter,
         jlink_adapter: JlinkAdapter,
         serial_adapter: SerialAdapter,
+        serial_command_executor: DynSerialCommandExecutor,
     ) -> Self {
         Self {
             ssh_adapter,
             jlink_adapter,
             serial_adapter,
+            serial_command_executor,
         }
     }
 }
@@ -48,6 +53,7 @@ impl ActionRunner for AdapterActionRunner {
         let ssh_adapter = self.ssh_adapter.clone();
         let jlink_adapter = self.jlink_adapter.clone();
         let serial_adapter = self.serial_adapter.clone();
+        let serial_command_executor = self.serial_command_executor.clone();
 
         Box::pin(async move {
             match action.as_str() {
@@ -74,6 +80,16 @@ impl ActionRunner for AdapterActionRunner {
                 "serial.write" => {
                     execute_serial_write(&context, &serial_adapter, &job, &device, payload.as_ref())
                         .await
+                }
+                "serial.exec" => {
+                    execute_serial_exec(
+                        &context,
+                        &serial_command_executor,
+                        &job,
+                        device,
+                        payload.as_ref(),
+                    )
+                    .await
                 }
                 _ => fail_job(
                     &context.jobs,
@@ -408,6 +424,83 @@ async fn execute_serial_write(
     }
 }
 
+async fn execute_serial_exec(
+    context: &ActionExecutionContext,
+    serial_command_executor: &DynSerialCommandExecutor,
+    job: &Job,
+    device: Device,
+    payload: Option<&ActionRequest>,
+) {
+    let Some(request) = serial_exec_request_from_action_payload(payload) else {
+        fail_job_with_source(
+            &context.jobs,
+            &context.events,
+            &context.artifacts,
+            job,
+            LogSource::Serial,
+            "action `serial.exec` requires a command payload",
+        );
+        return;
+    };
+
+    context.events.publish(adapter_event_with_source(
+        job,
+        LogSource::Serial,
+        LogChannel::System,
+        LogLevel::Info,
+        format!("serial exec: {}", request.command),
+    ));
+
+    match serial_command_executor.exec(device, request).await {
+        Ok(result) => {
+            if !result.output.is_empty() {
+                publish_stream_with_source(
+                    &context.events,
+                    job,
+                    LogSource::Serial,
+                    LogChannel::Stdout,
+                    &result.output,
+                );
+            }
+            persist_json_artifact(&context.artifacts, job, "result.json", &result);
+            if let Err(error) = context.artifacts.write_named_artifact(
+                &job.id,
+                "output.txt",
+                result.output.as_bytes(),
+            ) {
+                eprintln!("failed to persist job {} output.txt: {error}", job.id);
+            }
+
+            if result.timed_out {
+                fail_job_with_source(
+                    &context.jobs,
+                    &context.events,
+                    &context.artifacts,
+                    job,
+                    LogSource::Serial,
+                    "serial.exec timed out before matching expected output",
+                );
+            } else {
+                succeed_job(
+                    &context.jobs,
+                    &context.events,
+                    &context.artifacts,
+                    job,
+                    "serial.exec completed",
+                );
+            }
+        }
+        Err(error) => fail_job_with_source(
+            &context.jobs,
+            &context.events,
+            &context.artifacts,
+            job,
+            LogSource::Serial,
+            error.to_string(),
+        ),
+    }
+}
+
 async fn execute_jlink_probe(
     context: &ActionExecutionContext,
     jlink_adapter: &JlinkAdapter,
@@ -667,6 +760,64 @@ async fn execute_jlink_erase(
 fn publish_stream(events: &crate::events::EventBus, job: &Job, channel: LogChannel, output: &str) {
     for line in output.lines().filter(|line| !line.is_empty()) {
         events.publish(adapter_event(job, channel.clone(), LogLevel::Info, line));
+    }
+}
+
+fn publish_stream_with_source(
+    events: &crate::events::EventBus,
+    job: &Job,
+    source: LogSource,
+    channel: LogChannel,
+    output: &str,
+) {
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        events.publish(adapter_event_with_source(
+            job,
+            source.clone(),
+            channel.clone(),
+            LogLevel::Info,
+            line,
+        ));
+    }
+}
+
+fn serial_exec_request_from_action_payload(
+    payload: Option<&ActionRequest>,
+) -> Option<SerialExecRequest> {
+    let payload = payload
+        .and_then(|request| request.payload.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    if let Ok(request) = serde_json::from_str::<SerialExecRequest>(payload) {
+        if !request.command.trim().is_empty() {
+            return Some(request);
+        }
+    }
+
+    Some(SerialExecRequest {
+        command: payload.to_owned(),
+        timeout_secs: None,
+        until: None,
+    })
+}
+
+fn persist_json_artifact<T: Serialize>(
+    artifacts: &crate::storage::artifact_store::ArtifactStore,
+    job: &Job,
+    artifact_name: &str,
+    value: &T,
+) {
+    match serde_json::to_vec_pretty(value) {
+        Ok(json) => {
+            if let Err(error) = artifacts.write_named_artifact(&job.id, artifact_name, &json) {
+                eprintln!(
+                    "failed to persist job {} artifact {}: {error}",
+                    job.id, artifact_name
+                );
+            }
+        }
+        Err(error) => eprintln!("failed to serialize job {} result payload: {error}", job.id),
     }
 }
 

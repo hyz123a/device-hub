@@ -1,13 +1,17 @@
 use device_hub_shared::{
     ActionRequest, ActionStartResponse, ActiveTailStatus, BoardProfile, Device, DeviceDetail,
     DeviceRuntimeStatus, DiscoveredJlinkProbe, DiscoveredSerialPort, Job, JobStatus,
+    SerialExecRequest, SerialExecResult,
 };
 use std::sync::Arc;
 
 use crate::{
     error::AppError,
     events::EventBus,
-    ports::{DeviceRegistryError, DynDeviceRegistry, DynHostDiscovery, HostDiscoveryError},
+    ports::{
+        DeviceRegistryError, DynDeviceRegistry, DynHostDiscovery, DynSerialCommandExecutor,
+        HostDiscoveryError, SerialCommandError,
+    },
     services::job_manager::JobManager,
     storage::job_store::JobStore,
 };
@@ -20,6 +24,7 @@ pub struct AppUseCases {
     jobs: JobStore,
     job_manager: JobManager,
     events: EventBus,
+    serial_command_executor: DynSerialCommandExecutor,
 }
 
 impl AppUseCases {
@@ -30,6 +35,7 @@ impl AppUseCases {
         jobs: JobStore,
         job_manager: JobManager,
         events: EventBus,
+        serial_command_executor: DynSerialCommandExecutor,
     ) -> Self {
         Self {
             board_profiles: Arc::new(board_profiles),
@@ -38,6 +44,7 @@ impl AppUseCases {
             jobs,
             job_manager,
             events,
+            serial_command_executor,
         }
     }
 
@@ -105,6 +112,21 @@ impl AppUseCases {
             .map_err(map_host_discovery_error)?;
         probes.sort_by(|left, right| left.serial.cmp(&right.serial));
         Ok(probes)
+    }
+
+    pub async fn exec_serial_command(
+        &self,
+        device_id: &str,
+        request: SerialExecRequest,
+    ) -> Result<SerialExecResult, AppError> {
+        let device = self.get_device(device_id)?;
+        validate_action("serial.exec", &device)?;
+        validate_serial_exec_request(&request)?;
+        ensure_device_has_no_active_jobs(&self.jobs, device_id)?;
+        self.serial_command_executor
+            .exec(device, request)
+            .await
+            .map_err(map_serial_command_error)
     }
 
     pub fn list_jobs(&self, device_id: Option<&str>) -> Vec<Job> {
@@ -196,6 +218,10 @@ fn map_device_registry_error(error: DeviceRegistryError) -> AppError {
 }
 
 fn map_host_discovery_error(error: HostDiscoveryError) -> AppError {
+    AppError::Internal(error.to_string())
+}
+
+fn map_serial_command_error(error: SerialCommandError) -> AppError {
     AppError::Internal(error.to_string())
 }
 
@@ -292,7 +318,7 @@ fn validate_device(device: &Device) -> Result<(), AppError> {
 fn validate_action(action: &str, device: &Device) -> Result<(), AppError> {
     let supported = match action {
         "ssh.exec" | "ssh.tail" | "ssh.reboot" => device.ssh.is_some(),
-        "serial.tail" | "serial.write" => device.serial.is_some(),
+        "serial.tail" | "serial.write" | "serial.exec" => device.serial.is_some(),
         "jlink.probe" | "jlink.flash" | "jlink.verify" | "jlink.reset" | "jlink.erase" => {
             device.jlink.is_some()
         }
@@ -339,9 +365,43 @@ fn validate_payload(
         "serial.write" if value.is_none_or(|input| input.is_empty()) => Err(AppError::BadRequest(
             "action `serial.write` requires a payload".into(),
         )),
+        "serial.exec" if serial_exec_request_from_action_payload(value).is_none() => Err(
+            AppError::BadRequest("action `serial.exec` requires a command payload".into()),
+        ),
         "jlink.flash" if value.is_none_or(|path| path.trim().is_empty()) => Err(
             AppError::BadRequest("action `jlink.flash` requires a firmware path payload".into()),
         ),
         _ => Ok(()),
     }
+}
+
+fn validate_serial_exec_request(request: &SerialExecRequest) -> Result<(), AppError> {
+    if request.command.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "serial exec request requires a command".into(),
+        ));
+    }
+    if request.timeout_secs == Some(0) {
+        return Err(AppError::BadRequest(
+            "serial exec request requires timeout_secs > 0".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn serial_exec_request_from_action_payload(value: Option<&String>) -> Option<SerialExecRequest> {
+    let payload = value
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    if let Ok(request) = serde_json::from_str::<SerialExecRequest>(payload) {
+        return validate_serial_exec_request(&request)
+            .is_ok()
+            .then_some(request);
+    }
+    Some(SerialExecRequest {
+        command: payload.to_owned(),
+        timeout_secs: None,
+        until: None,
+    })
 }

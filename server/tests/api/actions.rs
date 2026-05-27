@@ -126,6 +126,42 @@ async fn start_action_creates_a_job_for_serial_write() {
 }
 
 #[tokio::test]
+async fn start_action_creates_a_job_for_serial_exec() {
+    let app = spawn_app().await;
+
+    let response = app
+        .post_action(
+            "board-alpha",
+            "serial.exec",
+            Some(&ActionRequest {
+                payload: Some("ip route".into()),
+            }),
+        )
+        .await;
+
+    assert!(response.status().is_success());
+    let job: Job = response.json().await.expect("invalid job json");
+    assert_eq!(job.device_id, "board-alpha");
+    assert_eq!(job.action, "serial.exec");
+    assert_eq!(job.payload.as_deref(), Some("ip route"));
+    assert_eq!(job.status, JobStatus::Pending);
+}
+
+#[tokio::test]
+async fn start_action_rejects_missing_payload_for_serial_exec() {
+    let app = spawn_app().await;
+
+    let response = app.post_action("board-alpha", "serial.exec", None).await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(
+        body["error"],
+        "bad request: action `serial.exec` requires a command payload"
+    );
+}
+
+#[tokio::test]
 async fn start_action_rejects_missing_payload_for_serial_write() {
     let app = spawn_app().await;
 

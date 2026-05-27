@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use device_hub_shared::{ActionRequest, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, Job};
+use device_hub_shared::{
+    ActionRequest, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, Job, SerialExecRequest,
+    SerialExecResult,
+};
 use futures::future::BoxFuture;
 use thiserror::Error;
 
@@ -38,6 +41,22 @@ pub trait ActionRunner: Send + Sync {
 }
 
 pub type DynActionRunner = Arc<dyn ActionRunner>;
+
+#[derive(Debug, Error)]
+pub enum SerialCommandError {
+    #[error("{0}")]
+    Failed(String),
+}
+
+pub trait SerialCommandExecutorPort: Send + Sync {
+    fn exec(
+        &self,
+        device: Device,
+        request: SerialExecRequest,
+    ) -> BoxFuture<'static, Result<SerialExecResult, SerialCommandError>>;
+}
+
+pub type DynSerialCommandExecutor = Arc<dyn SerialCommandExecutorPort>;
 
 #[derive(Debug, Error)]
 pub enum DeviceRegistryError {

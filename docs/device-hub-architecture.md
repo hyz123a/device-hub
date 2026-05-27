@@ -246,6 +246,9 @@ POST   /api/devices/{device_id}/actions/ssh.exec
 POST   /api/devices/{device_id}/actions/ssh.tail
 POST   /api/devices/{device_id}/actions/ssh.reboot
 POST   /api/devices/{device_id}/actions/serial.tail
+POST   /api/devices/{device_id}/actions/serial.write
+POST   /api/devices/{device_id}/actions/serial.exec
+POST   /api/devices/{device_id}/serial/exec
 
 POST   /api/devices/{device_id}/actions/jlink.probe
 POST   /api/devices/{device_id}/actions/jlink.flash
@@ -262,6 +265,7 @@ WS     /api/ws
 ```
 
 `ssh.tail` and `serial.tail` follow the same job lifecycle as any other action, but they do not time out by default; use `DELETE /api/jobs/{job_id}` to stop them.
+`serial.exec` is available both as an asynchronous job action and as a synchronous command/expect API that returns captured serial output directly.
 
 ### WebSocket `/api/ws`
 

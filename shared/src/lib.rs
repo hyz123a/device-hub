@@ -4,7 +4,9 @@ pub mod event;
 pub mod job;
 pub mod profile;
 
-pub use action::{ActionCapability, ActionRequest, ActionStartResponse};
+pub use action::{
+    ActionCapability, ActionRequest, ActionStartResponse, SerialExecRequest, SerialExecResult,
+};
 pub use device::{
     ActiveTailStatus, Device, DeviceConnectionSummary, DeviceDetail, DeviceRuntimeStatus,
     DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig, SerialConfig, SshConfig,
