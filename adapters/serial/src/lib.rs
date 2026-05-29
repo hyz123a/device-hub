@@ -8,11 +8,13 @@ use device_hub_shared::{DiscoveredSerialPort, SerialConfig, SerialExecRequest, S
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf, split};
+use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 use tokio_serial::{SerialPortBuilderExt, SerialPortType};
 
 const DEFAULT_READ_CHUNK_BYTES: usize = 1024;
 const DEFAULT_MAX_MESSAGE_BYTES: usize = 4096;
+const DEFAULT_CAPTURE_BUFFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_FLUSH_TIMEOUT: Duration = Duration::from_millis(40);
 type SerialStreamOpener =
@@ -41,9 +43,9 @@ pub enum SerialAdapterError {
 
 pub struct SerialTailSession {
     reader: ReadHalf<tokio_serial::SerialStream>,
-    shared_writer: Arc<SharedSerialWriter>,
+    shared_session: Arc<SharedSerialSession>,
     session_key: String,
-    sessions: Arc<Mutex<HashMap<String, std::sync::Weak<SharedSerialWriter>>>>,
+    sessions: Arc<Mutex<HashMap<String, std::sync::Weak<SharedSerialSession>>>>,
     buffer: Vec<u8>,
     queued: VecDeque<SerialLogChunk>,
     max_message_bytes: usize,
@@ -53,13 +55,21 @@ pub struct SerialTailSession {
 #[derive(Clone)]
 pub struct SerialAdapter {
     max_message_bytes: usize,
-    sessions: Arc<Mutex<HashMap<String, std::sync::Weak<SharedSerialWriter>>>>,
+    sessions: Arc<Mutex<HashMap<String, std::sync::Weak<SharedSerialSession>>>>,
     opener: Arc<SerialStreamOpener>,
 }
 
 #[derive(Debug)]
-struct SharedSerialWriter {
+struct SharedSerialSession {
     writer: tokio::sync::Mutex<WriteHalf<tokio_serial::SerialStream>>,
+    capture: Mutex<SharedSerialCapture>,
+    notify: Notify,
+}
+
+#[derive(Debug, Default)]
+struct SharedSerialCapture {
+    text: String,
+    dropped_bytes: usize,
 }
 
 impl SerialAdapter {
@@ -116,18 +126,20 @@ impl SerialAdapter {
 
         let stream = (self.opener)(config)?;
         let (reader, writer) = split(stream);
-        let shared_writer = Arc::new(SharedSerialWriter {
+        let shared_session = Arc::new(SharedSerialSession {
             writer: tokio::sync::Mutex::new(writer),
+            capture: Mutex::new(SharedSerialCapture::default()),
+            notify: Notify::new(),
         });
 
         self.sessions
             .lock()
             .expect("serial session registry poisoned")
-            .insert(session_key.clone(), Arc::downgrade(&shared_writer));
+            .insert(session_key.clone(), Arc::downgrade(&shared_session));
 
         Ok(SerialTailSession {
             reader,
-            shared_writer,
+            shared_session,
             session_key,
             sessions: self.sessions.clone(),
             buffer: Vec::new(),
@@ -142,8 +154,8 @@ impl SerialAdapter {
         config: &SerialConfig,
         payload: &[u8],
     ) -> Result<usize, SerialAdapterError> {
-        if let Some(shared_writer) = self.lookup_shared_writer(config) {
-            shared_writer.write(payload).await?;
+        if let Some(shared_session) = self.lookup_shared_session(config) {
+            shared_session.write(payload).await?;
             return Ok(payload.len());
         }
 
@@ -159,10 +171,8 @@ impl SerialAdapter {
         config: &SerialConfig,
         request: &SerialExecRequest,
     ) -> Result<SerialExecResult, SerialAdapterError> {
-        if self.lookup_shared_writer(config).is_some() {
-            return Err(SerialAdapterError::Busy {
-                port: config.port.clone(),
-            });
+        if let Some(shared_session) = self.lookup_shared_session(config) {
+            return shared_session.exec(request).await;
         }
 
         let timeout_duration = request
@@ -237,7 +247,7 @@ impl SerialAdapter {
             .collect())
     }
 
-    fn lookup_shared_writer(&self, config: &SerialConfig) -> Option<Arc<SharedSerialWriter>> {
+    fn lookup_shared_session(&self, config: &SerialConfig) -> Option<Arc<SharedSerialSession>> {
         let session_key = session_key(config);
         let mut sessions = self
             .sessions
@@ -247,7 +257,7 @@ impl SerialAdapter {
             .get(&session_key)
             .and_then(std::sync::Weak::upgrade)
         {
-            Some(shared_writer) => Some(shared_writer),
+            Some(shared_session) => Some(shared_session),
             None => {
                 sessions.remove(&session_key);
                 None
@@ -296,6 +306,7 @@ impl SerialTailSession {
     }
 
     fn push_bytes(&mut self, bytes: &[u8]) {
+        self.shared_session.append_capture(bytes);
         push_bytes_into_queue(
             &mut self.buffer,
             &mut self.queued,
@@ -320,19 +331,125 @@ impl Drop for SerialTailSession {
         if sessions
             .get(&self.session_key)
             .and_then(std::sync::Weak::upgrade)
-            .is_some_and(|shared_writer| Arc::ptr_eq(&shared_writer, &self.shared_writer))
+            .is_some_and(|shared_session| Arc::ptr_eq(&shared_session, &self.shared_session))
         {
             sessions.remove(&self.session_key);
         }
     }
 }
 
-impl SharedSerialWriter {
+impl SharedSerialSession {
     async fn write(&self, payload: &[u8]) -> Result<(), SerialAdapterError> {
         let mut writer = self.writer.lock().await;
         writer.write_all(payload).await?;
         writer.flush().await?;
         Ok(())
+    }
+
+    async fn exec(
+        &self,
+        request: &SerialExecRequest,
+    ) -> Result<SerialExecResult, SerialAdapterError> {
+        let timeout_duration = request
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(DEFAULT_EXEC_TIMEOUT);
+        let deadline = tokio::time::Instant::now() + timeout_duration;
+        let start_offset = self.capture_offset();
+        let input = command_input(&request.command);
+
+        self.write(input.as_bytes()).await?;
+
+        loop {
+            let output = self.captured_since(start_offset);
+            if let Some(marker) = request.until.as_deref().filter(|marker| !marker.is_empty()) {
+                if output.contains(marker) {
+                    return Ok(SerialExecResult {
+                        command: request.command.clone(),
+                        output,
+                        matched: Some(marker.to_owned()),
+                        timed_out: false,
+                    });
+                }
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Ok(SerialExecResult {
+                    command: request.command.clone(),
+                    output,
+                    matched: None,
+                    timed_out: true,
+                });
+            }
+
+            if timeout(deadline - now, self.notify.notified())
+                .await
+                .is_err()
+            {
+                return Ok(SerialExecResult {
+                    command: request.command.clone(),
+                    output: self.captured_since(start_offset),
+                    matched: None,
+                    timed_out: true,
+                });
+            }
+        }
+    }
+
+    fn append_capture(&self, bytes: &[u8]) {
+        let chunk = decode_chunk(bytes.to_vec());
+        if chunk.is_empty() {
+            return;
+        }
+
+        self.capture
+            .lock()
+            .expect("serial capture poisoned")
+            .append(&chunk, DEFAULT_CAPTURE_BUFFER_BYTES);
+        self.notify.notify_waiters();
+    }
+
+    fn captured_since(&self, start_offset: usize) -> String {
+        self.capture
+            .lock()
+            .expect("serial capture poisoned")
+            .since(start_offset)
+    }
+
+    fn capture_offset(&self) -> usize {
+        self.capture
+            .lock()
+            .expect("serial capture poisoned")
+            .offset()
+    }
+}
+
+impl SharedSerialCapture {
+    fn append(&mut self, chunk: &str, max_bytes: usize) {
+        self.text.push_str(chunk);
+        if self.text.len() <= max_bytes {
+            return;
+        }
+
+        let mut drain_len = self.text.len() - max_bytes;
+        while drain_len < self.text.len() && !self.text.is_char_boundary(drain_len) {
+            drain_len += 1;
+        }
+        self.text.drain(..drain_len);
+        self.dropped_bytes += drain_len;
+    }
+
+    fn since(&self, start_offset: usize) -> String {
+        let local_offset = start_offset.saturating_sub(self.dropped_bytes);
+        self.text
+            .get(local_offset..)
+            .unwrap_or(&self.text)
+            .to_owned()
+    }
+
+    fn offset(&self) -> usize {
+        self.dropped_bytes + self.text.len()
     }
 }
 
@@ -495,15 +612,17 @@ mod tests {
         };
         let (master, mut slave) = tokio_serial::SerialStream::pair().expect("serial pair");
         let (reader, writer) = split(master);
-        let shared_writer = Arc::new(SharedSerialWriter {
+        let shared_session = Arc::new(SharedSerialSession {
             writer: tokio::sync::Mutex::new(writer),
+            capture: Mutex::new(SharedSerialCapture::default()),
+            notify: Notify::new(),
         });
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let key = session_key(&config);
 
         let mut tail_session = SerialTailSession {
             reader,
-            shared_writer,
+            shared_session,
             session_key: key,
             sessions,
             buffer: Vec::new(),
@@ -534,15 +653,17 @@ mod tests {
         };
         let (master, mut slave) = tokio_serial::SerialStream::pair().expect("serial pair");
         let (reader, writer) = split(master);
-        let shared_writer = Arc::new(SharedSerialWriter {
+        let shared_session = Arc::new(SharedSerialSession {
             writer: tokio::sync::Mutex::new(writer),
+            capture: Mutex::new(SharedSerialCapture::default()),
+            notify: Notify::new(),
         });
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let key = session_key(&config);
         sessions
             .lock()
             .expect("serial session registry poisoned")
-            .insert(key.clone(), Arc::downgrade(&shared_writer));
+            .insert(key.clone(), Arc::downgrade(&shared_session));
 
         let adapter = SerialAdapter {
             max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
@@ -551,7 +672,7 @@ mod tests {
         };
         let mut tail_session = SerialTailSession {
             reader,
-            shared_writer,
+            shared_session,
             session_key: key.clone(),
             sessions: sessions.clone(),
             buffer: Vec::new(),

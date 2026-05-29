@@ -94,7 +94,7 @@ curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.exe
 
 5. Execute a serial command and return captured output directly
 
-Use this when the user wants command output without manually inspecting a tail stream.
+Use this when the user wants command output without manually inspecting a tail stream. If an active `serial.tail` exists for the device, Device Hub reuses that tail session for command/expect capture; otherwise it opens a temporary serial session for the command.
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/serial/exec \
@@ -110,6 +110,7 @@ Notes:
 - Without `reuse=true`, starting `serial.tail` keeps the normal contract: it attempts to create a new job.
 - `serial.exec` is available as either an asynchronous job action or a synchronous `/serial/exec` API.
 - The synchronous `/serial/exec` response includes `command`, `output`, `matched`, and `timed_out`.
+- The synchronous `/serial/exec` API can run while `serial.tail` is active; it reuses the active tail session instead of requiring the tail to be stopped.
 - Prefer synchronous `/serial/exec` for one-shot commands such as `ip route`, `iwpriv ra0 show psinfo`, or `cat /proc/net/nf_conntrack`.
 - Prefer asynchronous `actions/serial.exec` when durable job evidence and downloadable `output.txt` / `result.json` artifacts are needed.
 
@@ -242,6 +243,7 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 6. If the user wants to run a serial command and receive the command output, prefer this order:
 
 - Use `POST /api/devices/<device-id>/serial/exec` with `command`, a bounded `timeout_secs`, and an `until` prompt marker when known.
+- Do not stop an active `serial.tail` first; `/serial/exec` reuses it automatically and falls back to a temporary serial session when no tail is active.
 - Report `output`, `matched`, and `timed_out` from the response.
 - If `timed_out=true`, include the partial captured output and suggest adjusting `until` or timeout only when useful.
 
@@ -300,7 +302,7 @@ Next: <useful next step or none>
 - If the backend is down, say so clearly and help restart or diagnose it before issuing device commands.
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
 - Treat `serial.write` as a short-lived job that confirms bytes were sent, not as the place to inspect device output.
-- Treat synchronous `/serial/exec` as the preferred path for one-shot command/expect output.
+- Treat synchronous `/serial/exec` as the preferred path for one-shot command/expect output, including when a `serial.tail` is already active.
 - Treat asynchronous `actions/serial.exec` as the preferred path when the user needs durable job evidence.
 - Treat log cache flushing as an in-memory replay cleanup only; never describe it as evidence deletion.
 - Treat `GET /api/events` as a cache query, not persisted evidence; use job evidence or artifacts for durable history.

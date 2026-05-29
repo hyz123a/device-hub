@@ -555,6 +555,7 @@ async fn serial_exec_api_returns_output_until_marker() {
             .write_all(b"default via 192.168.1.1 dev ra0\n# ")
             .await
             .expect("write serial response");
+        slave
     });
 
     let response = app
@@ -576,6 +577,112 @@ async fn serial_exec_api_returns_output_until_marker() {
     assert!(!result.timed_out);
 
     device_task.await.expect("join device task");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_exec_api_reuses_active_tail_session() {
+    let (app, mut slaves) = spawn_serial_test_app(1).await;
+    let mut slave = slaves.pop().expect("missing serial slave");
+
+    let tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid serial tail job json");
+    app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+
+    let device_task = tokio::spawn(async move {
+        let mut command = [0_u8; 9];
+        slave
+            .read_exact(&mut command)
+            .await
+            .expect("read serial command");
+        assert_eq!(&command, b"ip route\n");
+        slave
+            .write_all(b"default via 192.168.1.1 dev ra0\n# ")
+            .await
+            .expect("write serial response");
+        slave
+    });
+
+    let response = app
+        .exec_serial(
+            "board-alpha",
+            &SerialExecRequest {
+                command: "ip route".into(),
+                timeout_secs: Some(2),
+                until: Some("# ".into()),
+            },
+        )
+        .await;
+
+    assert!(response.status().is_success());
+    let result: SerialExecResult = response.json().await.expect("invalid serial exec json");
+    assert!(result.output.contains("default via 192.168.1.1 dev ra0"));
+    assert_eq!(result.matched.as_deref(), Some("# "));
+    assert!(!result.timed_out);
+
+    let running_tail = app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+    assert_eq!(running_tail.action, "serial.tail");
+    let tail_events = wait_for_job_events(&app, &tail.id, 4).await;
+    assert!(
+        tail_events
+            .iter()
+            .any(|event| event.message.contains("default via 192.168.1.1 dev ra0"))
+    );
+
+    drop(device_task.await.expect("join device task"));
+    cancel_job_if_running(&app, &tail.id).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_exec_api_reused_tail_returns_partial_output_on_timeout() {
+    let (app, mut slaves) = spawn_serial_test_app(1).await;
+    let mut slave = slaves.pop().expect("missing serial slave");
+
+    let tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid serial tail job json");
+    app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+
+    let device_task = tokio::spawn(async move {
+        let mut command = [0_u8; 23];
+        slave
+            .read_exact(&mut command)
+            .await
+            .expect("read serial command");
+        assert_eq!(&command, b"iwpriv ra0 show psinfo\n");
+        slave
+            .write_all(b"ra0 psinfo: awake\n")
+            .await
+            .expect("write partial serial response");
+    });
+
+    let response = app
+        .exec_serial(
+            "board-alpha",
+            &SerialExecRequest {
+                command: "iwpriv ra0 show psinfo".into(),
+                timeout_secs: Some(1),
+                until: Some("never-matched".into()),
+            },
+        )
+        .await;
+
+    assert!(response.status().is_success());
+    let result: SerialExecResult = response.json().await.expect("invalid serial exec json");
+    assert!(result.output.contains("ra0 psinfo: awake"));
+    assert_eq!(result.matched, None);
+    assert!(result.timed_out);
+
+    device_task.await.expect("join device task");
+    cancel_job_if_running(&app, &tail.id).await;
 }
 
 #[cfg(unix)]

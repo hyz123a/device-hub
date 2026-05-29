@@ -122,7 +122,7 @@ impl AppUseCases {
         let device = self.get_device(device_id)?;
         validate_action("serial.exec", &device)?;
         validate_serial_exec_request(&request)?;
-        ensure_device_has_no_active_jobs(&self.jobs, device_id)?;
+        ensure_device_has_no_active_jobs_except(&self.jobs, device_id, "serial.tail")?;
         self.serial_command_executor
             .exec(device, request)
             .await
@@ -226,8 +226,18 @@ fn map_serial_command_error(error: SerialCommandError) -> AppError {
 }
 
 fn ensure_device_has_no_active_jobs(jobs: &JobStore, device_id: &str) -> Result<(), AppError> {
+    ensure_device_has_no_active_jobs_except(jobs, device_id, "")
+}
+
+fn ensure_device_has_no_active_jobs_except(
+    jobs: &JobStore,
+    device_id: &str,
+    allowed_action: &str,
+) -> Result<(), AppError> {
     if jobs.list().into_iter().any(|job| {
-        job.device_id == device_id && matches!(job.status, JobStatus::Pending | JobStatus::Running)
+        job.device_id == device_id
+            && job.action != allowed_action
+            && matches!(job.status, JobStatus::Pending | JobStatus::Running)
     }) {
         return Err(AppError::Conflict(format!(
             "device `{device_id}` has active jobs"
