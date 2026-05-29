@@ -58,7 +58,9 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
                     <span class={level_class}>{format!("{:?}", event.level)}</span>
                     <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted">{format_source(&event.source)}</span>
                 </div>
-                <span class="font-mono text-sm text-ink-muted">{event.ts.to_rfc3339()}</span>
+                <span class="font-mono text-sm text-ink-muted" title="UTC event timestamp">
+                    {format!("{} UTC", event.ts.to_rfc3339())}
+                </span>
             </div>
             {
                 if message_meta.has_structured_metadata() {

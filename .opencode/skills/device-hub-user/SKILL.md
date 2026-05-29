@@ -19,7 +19,7 @@ metadata:
 ## When to use me
 
 - The user wants to use Device Hub as an operator rather than modify its code.
-- The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, `serial.tail`, `serial.write`, or `serial.exec`.
+- The user asks to run or inspect device actions like `ssh.exec`, `ssh.tail`, `ssh.reboot`, `serial.tail`, `serial.write`, `serial.exec`, or `adb.logcat`.
 - The user wants to look at job evidence, filtered logs, recent device logs without a job id, live streams, timeout behavior, or rerun a previous job.
 - The user wants to clear or flush log cache without deleting persisted job evidence or artifacts.
 - The user reports that the local API is unavailable and wants help checking service health.
@@ -90,6 +90,14 @@ curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.exe
 curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.exec \
   -H 'content-type: application/json' \
   -d '{"payload":"{\"command\":\"iwpriv ra0 show psinfo\",\"timeout_secs\":5,\"until\":\"# \"}"}'
+
+curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/adb.logcat \
+  -H 'content-type: application/json' \
+  -d 'null'
+
+curl -s -X POST 'http://127.0.0.1:3000/api/devices/<device-id>/actions/adb.logcat?reuse=true' \
+  -H 'content-type: application/json' \
+  -d 'null'
 ```
 
 5. Execute a serial command and return captured output directly
@@ -107,6 +115,7 @@ Notes:
 - Action start responses include the normal job fields plus `already_running`.
 - For ordinary starts, `already_running` is `false`.
 - For `serial.tail?reuse=true`, Device Hub returns the active tail job and sets `already_running=true` instead of opening the serial port again.
+- For `adb.logcat?reuse=true`, Device Hub returns the active logcat job and sets `already_running=true` instead of spawning another adb process.
 - Without `reuse=true`, starting `serial.tail` keeps the normal contract: it attempts to create a new job.
 - `serial.exec` is available as either an asynchronous job action or a synchronous `/serial/exec` API.
 - The synchronous `/serial/exec` response includes `command`, `output`, `matched`, and `timed_out`.
@@ -129,6 +138,7 @@ Examples:
 ```text
 ws://127.0.0.1:3000/api/ws?device_id=<device-id>
 ws://127.0.0.1:3000/api/ws?device_id=<device-id>&source=serial
+ws://127.0.0.1:3000/api/ws?device_id=<device-id>&source=adb
 ws://127.0.0.1:3000/api/ws?device_id=<device-id>&source=ssh&search=timeout
 ws://127.0.0.1:3000/api/ws?device_id=<device-id>&structured_only=true
 ```
@@ -138,7 +148,7 @@ Supported WebSocket filters:
 - `device_id=<device-id>`
 - `job_id=<job-id>`
 - `since=<RFC3339 timestamp>`
-- `source=ssh|serial|jlink|system|job`
+- `source=ssh|serial|jlink|adb|system|job`
 - `level=debug|info|warn|error`
 - `search=<case-insensitive substring match against message, device_id, job_id, source, channel, level>`
 - `structured_only=true|false`
@@ -152,6 +162,7 @@ Notes:
 
 ```bash
 curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial"
+curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=adb"
 curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?level=error"
 curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial&search=panic"
 curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial&level=error&search=timeout"
@@ -159,7 +170,7 @@ curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial&level=erro
 
 Supported filters:
 
-- `source=ssh|serial|jlink|system|job`
+- `source=ssh|serial|jlink|adb|system|job`
 - `level=debug|info|warn|error`
 - `search=<case-insensitive substring match against message, device_id, job_id, source, channel, level>`
 
@@ -167,6 +178,7 @@ Supported filters:
 
 ```bash
 curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&source=serial&since=5m"
+curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&source=adb&since=5m"
 curl -s "http://127.0.0.1:3000/api/events?device_id=homebase1,camera1&search=history&since=5m"
 curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&search_any=reset,key,factory_reset,button_reset,KEY_UNBIND&since=5m"
 curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&search_regex=wifi_link%7CKEEP_NORMAL&since=5m"
@@ -175,7 +187,7 @@ curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&search_regex=wif
 Supported filters:
 
 - `device_id=<device-id>` or comma-separated ids such as `device_id=homebase1,camera1`
-- `source=ssh|serial|jlink|system|job`
+- `source=ssh|serial|jlink|adb|system|job`
 - `level=debug|info|warn|error`
 - `search=<case-insensitive substring match against message, device_id, job_id, source, channel, level>`
 - `search_any=<comma-separated case-insensitive OR terms>`
@@ -236,8 +248,10 @@ curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
 - `serial.write` payloads may be raw text, newline-terminated commands, or control characters like Ctrl-C.
 - `serial.exec` requires a command. The synchronous API accepts structured JSON: `command`, optional `timeout_secs`, and optional `until`.
 - The asynchronous `actions/serial.exec` endpoint accepts a plain command string in `payload`, or a JSON-encoded `SerialExecRequest` string when timeout or marker matching is needed.
+- `adb.logcat` does not require a payload; it uses the device ADB config and default logcat arguments.
 - `ssh.reboot` does not require a payload.
 - `serial.tail?reuse=true` reuses an active tail and returns `already_running=true`; use it when the user explicitly wants the existing stream.
+- `adb.logcat?reuse=true` reuses an active logcat job and returns `already_running=true`; use it when the user explicitly wants the existing Android log stream.
 
 5. Start the action and capture the returned `job_id`.
 6. If the user wants to run a serial command and receive the command output, prefer this order:
@@ -301,6 +315,7 @@ Next: <useful next step or none>
 - Prefer using the rerun endpoint for repeat attempts so the same stored inputs are reused.
 - If the backend is down, say so clearly and help restart or diagnose it before issuing device commands.
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
+- Treat `adb.logcat` as a long-running tail job; reuse or cancel it explicitly.
 - Treat `serial.write` as a short-lived job that confirms bytes were sent, not as the place to inspect device output.
 - Treat synchronous `/serial/exec` as the preferred path for one-shot command/expect output, including when a `serial.tail` is already active.
 - Treat asynchronous `actions/serial.exec` as the preferred path when the user needs durable job evidence.

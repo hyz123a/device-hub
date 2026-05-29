@@ -10,6 +10,8 @@ use thiserror::Error;
 
 use crate::app::AppState;
 
+const FRONTEND_CACHE_BUSTER: &str = "20260529-utc-timestamp-label";
+
 #[derive(Clone, Debug)]
 pub struct FrontendAsset {
     pub bytes: Vec<u8>,
@@ -106,10 +108,15 @@ pub async fn api_not_found(_request: Request) -> impl IntoResponse {
 }
 
 fn asset_response(asset: &FrontendAsset, head_only: bool) -> Response<Body> {
+    let bytes = if asset.content_type == "text/html; charset=utf-8" {
+        cache_bust_html_assets(&asset.bytes)
+    } else {
+        asset.bytes.clone()
+    };
     let mut response = if head_only {
         Response::new(Body::empty())
     } else {
-        Response::new(Body::from(asset.bytes.clone()))
+        Response::new(Body::from(bytes))
     };
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().insert(
@@ -121,6 +128,18 @@ fn asset_response(asset: &FrontendAsset, head_only: bool) -> Response<Body> {
         HeaderValue::from_static(asset.cache_control),
     );
     response
+}
+
+fn cache_bust_html_assets(bytes: &[u8]) -> Vec<u8> {
+    let Ok(html) = std::str::from_utf8(bytes) else {
+        return bytes.to_vec();
+    };
+    html.replace(".js'", &format!(".js?v={FRONTEND_CACHE_BUSTER}'"))
+        .replace(".js\"", &format!(".js?v={FRONTEND_CACHE_BUSTER}\""))
+        .replace(".wasm'", &format!(".wasm?v={FRONTEND_CACHE_BUSTER}'"))
+        .replace(".wasm\"", &format!(".wasm?v={FRONTEND_CACHE_BUSTER}\""))
+        .replace(".css\"", &format!(".css?v={FRONTEND_CACHE_BUSTER}\""))
+        .into_bytes()
 }
 
 fn normalize_archive_path(path: &std::path::Path) -> String {
