@@ -744,10 +744,15 @@ fn matches_stream_filter(event: &LogEvent, filter: &StreamFilter) -> bool {
 }
 
 fn available_device_sources(events: &[LogEvent]) -> Vec<LogSource> {
-    [LogSource::Serial, LogSource::Ssh, LogSource::Jlink]
-        .into_iter()
-        .filter(|source| events.iter().any(|e| e.source == *source))
-        .collect()
+    [
+        LogSource::Serial,
+        LogSource::Ssh,
+        LogSource::Jlink,
+        LogSource::Adb,
+    ]
+    .into_iter()
+    .filter(|source| events.iter().any(|e| e.source == *source))
+    .collect()
 }
 
 pub(crate) fn format_source_label(source: &LogSource) -> &'static str {
@@ -755,6 +760,7 @@ pub(crate) fn format_source_label(source: &LogSource) -> &'static str {
         LogSource::Serial => "serial",
         LogSource::Ssh => "ssh",
         LogSource::Jlink => "jlink",
+        LogSource::Adb => "adb",
         LogSource::System => "system",
         LogSource::Job => "job",
     }

@@ -162,11 +162,11 @@ fn format_terminal_events(events: &[LogEvent]) -> String {
 }
 
 fn format_raw_terminal_event(message: &str) -> String {
-    let mut raw = message.to_owned();
+    let mut raw = message.replace("\r\n", "\n").replace('\r', "\n");
     if !raw.ends_with('\n') {
         raw.push('\n');
     }
-    raw
+    raw.replace('\n', "\r\n")
 }
 
 #[cfg(test)]
@@ -199,7 +199,7 @@ mod tests {
 
         let rendered = format_terminal_events(&events);
 
-        assert!(rendered.contains("line one\nline two\n"));
+        assert!(rendered.contains("line one\r\nline two\r\n"));
         assert!(!rendered.contains("board-alpha"));
         assert!(!rendered.contains("board-beta"));
     }
@@ -210,6 +210,15 @@ mod tests {
 
         let rendered = format_terminal_events(&events);
 
-        assert_eq!(rendered, "hello\n");
+        assert_eq!(rendered, "hello\r\n");
+    }
+
+    #[test]
+    fn terminal_stream_normalizes_existing_newlines_to_crlf() {
+        let events = vec![sample_event(1, "board-alpha", "one\ntwo\r\nthree\r")];
+
+        let rendered = format_terminal_events(&events);
+
+        assert_eq!(rendered, "one\r\ntwo\r\nthree\r\n");
     }
 }

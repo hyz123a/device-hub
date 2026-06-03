@@ -151,7 +151,7 @@ impl AppUseCases {
         let device = self.get_device(device_id)?;
         validate_action(&action, &device)?;
         validate_payload(&action, &device, payload.as_ref())?;
-        if reuse && action == "serial.tail" {
+        if reuse && matches!(action.as_str(), "serial.tail" | "adb.logcat") {
             if let Some(job) = find_active_job(&self.jobs, device_id, &action) {
                 return Ok(ActionStartResponse {
                     job,
@@ -256,7 +256,7 @@ fn find_active_job(jobs: &JobStore, device_id: &str, action: &str) -> Option<Job
 }
 
 fn is_tail_action(action: &str) -> bool {
-    matches!(action, "serial.tail" | "ssh.tail")
+    matches!(action, "serial.tail" | "ssh.tail" | "adb.logcat")
 }
 
 fn validate_device(device: &Device) -> Result<(), AppError> {
@@ -276,7 +276,11 @@ fn validate_device(device: &Device) -> Result<(), AppError> {
     if device.label.trim().is_empty() {
         return Err(AppError::BadRequest("device label is required".into()));
     }
-    if device.ssh.is_none() && device.serial.is_none() && device.jlink.is_none() {
+    if device.ssh.is_none()
+        && device.serial.is_none()
+        && device.jlink.is_none()
+        && device.adb.is_none()
+    {
         return Err(AppError::BadRequest(
             "device must configure at least one connection".into(),
         ));
@@ -322,6 +326,28 @@ fn validate_device(device: &Device) -> Result<(), AppError> {
         }
     }
 
+    if let Some(adb) = &device.adb {
+        if adb.serial.trim().is_empty() {
+            return Err(AppError::BadRequest("adb config requires serial".into()));
+        }
+        if adb
+            .transport
+            .as_deref()
+            .is_some_and(|transport| transport.trim().is_empty())
+        {
+            return Err(AppError::BadRequest(
+                "adb config transport must not be empty when set".into(),
+            ));
+        }
+        if let Some(transport) = adb.transport.as_deref()
+            && !matches!(transport, "serial" | "usb" | "emulator")
+        {
+            return Err(AppError::BadRequest(
+                "adb config transport must be serial, usb, or emulator".into(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -329,6 +355,7 @@ fn validate_action(action: &str, device: &Device) -> Result<(), AppError> {
     let supported = match action {
         "ssh.exec" | "ssh.tail" | "ssh.reboot" => device.ssh.is_some(),
         "serial.tail" | "serial.write" | "serial.exec" => device.serial.is_some(),
+        "adb.logcat" => device.adb.is_some(),
         "jlink.probe" | "jlink.flash" | "jlink.verify" | "jlink.reset" | "jlink.erase" => {
             device.jlink.is_some()
         }

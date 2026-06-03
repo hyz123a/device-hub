@@ -6,8 +6,9 @@ use device_hub_server::{
     services::job_manager::{ActionPolicy, JobPolicyProvider},
 };
 use device_hub_shared::{
-    ActionRequest, ActionStartResponse, Device, DeviceDetail, JlinkConfig, Job, JobEvidence,
-    JobStatus, LogCacheClearResponse, SerialConfig, SerialExecRequest, SerialExecResult, SshConfig,
+    ActionRequest, ActionStartResponse, AdbConfig, Device, DeviceDetail, JlinkConfig, Job,
+    JobEvidence, JobStatus, LogCacheClearResponse, SerialConfig, SerialExecRequest,
+    SerialExecResult, SshConfig,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -41,6 +42,17 @@ fn make_fake_jlink(dir: &Path, body: &str) -> std::path::PathBuf {
     script_path
 }
 
+fn make_fake_adb(dir: &Path, body: &str) -> std::path::PathBuf {
+    let script_path = dir.join("fake-adb.sh");
+    fs::write(&script_path, format!("#!/bin/sh\nset -eu\n{body}\n")).expect("write fake adb");
+    let mut permissions = fs::metadata(&script_path)
+        .expect("fake adb metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script_path, permissions).expect("chmod fake adb");
+    script_path
+}
+
 fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
     AppConfig {
         devices: vec![
@@ -56,6 +68,7 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                     speed_khz: 4000,
                     autoconnect: true,
                 }),
+                adb: None,
             },
             Device {
                 id: "board-alpha".into(),
@@ -68,11 +81,13 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                 }),
                 serial: None,
                 jlink: None,
+                adb: None,
             },
         ],
         device_registry_path: None,
         ssh_program: Some(ssh_program),
         jlink_program: None,
+        adb_program: None,
         artifacts_dir: None,
     }
 }
@@ -91,6 +106,7 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                 }),
                 serial: None,
                 jlink: None,
+                adb: None,
             },
             Device {
                 id: "board-mixed".into(),
@@ -109,11 +125,13 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
                     speed_khz: 4000,
                     autoconnect: true,
                 }),
+                adb: None,
             },
         ],
         device_registry_path: None,
         ssh_program: Some(ssh_program),
         jlink_program: None,
+        adb_program: None,
         artifacts_dir: None,
     }
 }
@@ -132,10 +150,12 @@ fn jlink_test_config(jlink_program: String) -> AppConfig {
                 speed_khz: 4000,
                 autoconnect: true,
             }),
+            adb: None,
         }],
         device_registry_path: None,
         ssh_program: None,
         jlink_program: Some(jlink_program),
+        adb_program: None,
         artifacts_dir: None,
     }
 }
@@ -151,10 +171,34 @@ fn serial_test_config() -> AppConfig {
                 baud: 115200,
             }),
             jlink: None,
+            adb: None,
         }],
         device_registry_path: None,
         ssh_program: None,
         jlink_program: None,
+        adb_program: None,
+        artifacts_dir: None,
+    }
+}
+
+fn adb_test_config(adb_program: String) -> AppConfig {
+    AppConfig {
+        devices: vec![Device {
+            id: "android-alpha".into(),
+            label: "Android Device".into(),
+            ssh: None,
+            serial: None,
+            jlink: None,
+            adb: Some(AdbConfig {
+                serial: "08211FDD4002KE".into(),
+                transport: None,
+                default_logcat_args: vec!["-v".into(), "time".into()],
+            }),
+        }],
+        device_registry_path: None,
+        ssh_program: None,
+        jlink_program: None,
+        adb_program: Some(adb_program),
         artifacts_dir: None,
     }
 }
@@ -253,6 +297,95 @@ async fn serial_tail_reuse_returns_active_job_without_opening_the_port_again() {
     assert_eq!(reused.job.status, JobStatus::Running);
 
     cancel_job_if_running(&app, &running.id).await;
+}
+
+#[tokio::test]
+async fn adb_logcat_streams_device_output() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let adb = make_fake_adb(
+        tempdir.path(),
+        r#"
+test "$1" = "-s"
+test "$2" = "08211FDD4002KE"
+test "$3" = "logcat"
+test "$4" = "-v"
+test "$5" = "time"
+echo "06-03 10:00:00.000  123  456 I ActivityManager: boot complete"
+echo "06-03 10:00:00.100  123  456 W DeviceHub: sample warning"
+"#,
+    );
+    let app = spawn_app_with_config(adb_test_config(adb.display().to_string())).await;
+
+    let created: Job = app
+        .post_action("android-alpha", "adb.logcat", None)
+        .await
+        .json()
+        .await
+        .expect("invalid adb logcat job json");
+
+    let done = app
+        .wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+    assert_eq!(done.action, "adb.logcat");
+
+    let events = wait_for_job_events(&app, &created.id, 4).await;
+    assert!(events.iter().any(|event| {
+        event.source == device_hub_shared::LogSource::Adb
+            && event.message.contains("ActivityManager: boot complete")
+    }));
+    assert!(events.iter().any(|event| {
+        event.source == device_hub_shared::LogSource::Adb
+            && event.message.contains("DeviceHub: sample warning")
+    }));
+}
+
+#[tokio::test]
+async fn device_detail_exposes_active_adb_logcat_runtime_and_reuse_returns_it() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let adb = make_fake_adb(
+        tempdir.path(),
+        r#"
+echo "06-03 10:00:00.000  123  456 I DeviceHub: logcat active"
+sleep 5
+"#,
+    );
+    let app = spawn_app_with_config(adb_test_config(adb.display().to_string())).await;
+
+    let running: Job = app
+        .post_action("android-alpha", "adb.logcat", None)
+        .await
+        .json()
+        .await
+        .expect("invalid adb logcat job json");
+    app.wait_for_job_status(&running.id, JobStatus::Running)
+        .await;
+
+    let detail: DeviceDetail = app
+        .api_client
+        .get(app.endpoint("/api/devices/android-alpha"))
+        .send()
+        .await
+        .expect("get device detail")
+        .json()
+        .await
+        .expect("invalid device detail json");
+    assert_eq!(detail.runtime.active_tails.len(), 1);
+    assert_eq!(detail.runtime.active_tails[0].action, "adb.logcat");
+    assert_eq!(detail.runtime.active_tails[0].job_id, running.id);
+
+    let response = app
+        .api_client
+        .post(app.endpoint("/api/devices/android-alpha/actions/adb.logcat?reuse=true"))
+        .json(&Option::<ActionRequest>::None)
+        .send()
+        .await
+        .expect("failed to reuse adb logcat");
+    assert!(response.status().is_success());
+    let reused: ActionStartResponse = response.json().await.expect("invalid reuse response json");
+    assert_eq!(reused.job.id, running.id);
+    assert!(reused.already_running);
+
+    assert!(app.cancel_job(&running.id).await.status().is_success());
 }
 
 #[tokio::test]

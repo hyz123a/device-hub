@@ -494,6 +494,7 @@ fn log_source_label(source: &LogSource) -> &'static str {
         LogSource::Ssh => "ssh",
         LogSource::Serial => "serial",
         LogSource::Jlink => "jlink",
+        LogSource::Adb => "adb",
         LogSource::System => "system",
         LogSource::Job => "job",
     }
@@ -582,6 +583,12 @@ fn build_job_summary(
                 .serial
                 .as_ref()
                 .map(|serial| format!("serial: {} @ {} baud", serial.port, serial.baud))
+        }),
+        "adb.logcat" => device.and_then(|device| {
+            device
+                .adb
+                .as_ref()
+                .map(|adb| format!("adb: {} logcat", adb.serial))
         }),
         "serial.write" => job
             .payload

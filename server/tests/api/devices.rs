@@ -1,7 +1,8 @@
 use device_hub_server::config::AppConfig;
 use device_hub_shared::{
-    Device, DeviceConnectionSummary, DeviceDetail, DeviceRuntimeStatus, DiscoveredJlinkProbe,
-    DiscoveredSerialPort, JlinkConfig, Job, JobStatus, SerialConfig, SshConfig,
+    AdbConfig, Device, DeviceConnectionSummary, DeviceDetail, DeviceRuntimeStatus,
+    DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig, Job, JobStatus, SerialConfig,
+    SshConfig,
 };
 
 use crate::helpers::{
@@ -23,6 +24,7 @@ fn base_config() -> AppConfig {
                     speed_khz: 4000,
                     autoconnect: true,
                 }),
+                adb: None,
             },
             Device {
                 id: "board-alpha".into(),
@@ -38,6 +40,7 @@ fn base_config() -> AppConfig {
                     baud: 115200,
                 }),
                 jlink: None,
+                adb: None,
             },
             Device {
                 id: "board-mixed".into(),
@@ -59,11 +62,13 @@ fn base_config() -> AppConfig {
                     speed_khz: 4000,
                     autoconnect: true,
                 }),
+                adb: None,
             },
         ],
         device_registry_path: None,
         ssh_program: None,
         jlink_program: None,
+        adb_program: None,
         artifacts_dir: None,
     }
 }
@@ -78,6 +83,7 @@ fn create_only_serial_device() -> Device {
             baud: 57600,
         }),
         jlink: None,
+        adb: None,
     }
 }
 
@@ -134,11 +140,13 @@ async fn get_device_returns_detail_for_known_device() {
                     speed_khz: 4000,
                     autoconnect: true,
                 }),
+                adb: None,
             },
             capabilities: DeviceConnectionSummary {
                 has_ssh: true,
                 has_serial: true,
                 has_jlink: true,
+                has_adb: false,
             },
             runtime: DeviceRuntimeStatus::default(),
         }
@@ -169,6 +177,43 @@ async fn create_device_adds_it_to_the_registry() {
 }
 
 #[tokio::test]
+async fn create_device_accepts_adb_only_targets() {
+    let app = spawn_app().await;
+    let device = Device {
+        id: "pixel5".into(),
+        label: "vicohome".into(),
+        ssh: None,
+        serial: None,
+        jlink: None,
+        adb: Some(AdbConfig {
+            serial: "08211FDD4002KE".into(),
+            transport: None,
+            default_logcat_args: vec!["-v".into(), "time".into()],
+        }),
+    };
+
+    let response = app.create_device(&device).await;
+
+    assert!(response.status().is_success());
+    let created: Device = response.json().await.expect("invalid created device json");
+    assert_eq!(created, device);
+
+    let detail: DeviceDetail = app
+        .api_client
+        .get(app.endpoint("/api/devices/pixel5"))
+        .send()
+        .await
+        .expect("get adb device")
+        .json()
+        .await
+        .expect("invalid device detail");
+    assert_eq!(detail.capabilities.has_ssh, false);
+    assert_eq!(detail.capabilities.has_serial, false);
+    assert_eq!(detail.capabilities.has_jlink, false);
+    assert_eq!(detail.capabilities.has_adb, true);
+}
+
+#[tokio::test]
 async fn update_device_replaces_connection_settings() {
     let app = spawn_app().await;
     let updated = Device {
@@ -188,6 +233,7 @@ async fn update_device_replaces_connection_settings() {
             speed_khz: 2000,
             autoconnect: false,
         }),
+        adb: None,
     };
 
     let response = app.update_device("board-alpha", &updated).await;
@@ -209,6 +255,7 @@ async fn update_device_replaces_connection_settings() {
     assert_eq!(detail.capabilities.has_ssh, true);
     assert_eq!(detail.capabilities.has_serial, false);
     assert_eq!(detail.capabilities.has_jlink, true);
+    assert_eq!(detail.capabilities.has_adb, false);
 }
 
 #[tokio::test]
@@ -239,6 +286,7 @@ async fn create_device_rejects_unconfigured_device() {
         ssh: None,
         serial: None,
         jlink: None,
+        adb: None,
     };
 
     let response = app.create_device(&invalid).await;

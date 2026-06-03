@@ -269,6 +269,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 
 [[package]]
+name = "device-hub-adapter-adb"
+version = "0.1.0"
+dependencies = [
+ "device-hub-shared",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "device-hub-adapter-jlink"
 version = "0.1.0"
 dependencies = [
@@ -326,6 +335,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "device-hub-adapter-adb",
  "device-hub-adapter-jlink",
  "device-hub-adapter-serial",
  "device-hub-adapter-ssh",

@@ -5,6 +5,7 @@ members = [
     "adapters/ssh",
     "adapters/serial",
     "adapters/jlink",
+    "adapters/adb",
     "frontend",
 ]
 resolver = "2"

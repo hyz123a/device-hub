@@ -104,6 +104,33 @@ async fn start_action_creates_a_job_for_serial_tail() {
 }
 
 #[tokio::test]
+async fn start_action_creates_a_job_for_adb_logcat() {
+    let app = spawn_app().await;
+
+    let response = app.post_action("board-alpha", "adb.logcat", None).await;
+
+    assert!(response.status().is_success());
+    let job: Job = response.json().await.expect("invalid job json");
+    assert_eq!(job.device_id, "board-alpha");
+    assert_eq!(job.action, "adb.logcat");
+    assert_eq!(job.status, JobStatus::Pending);
+}
+
+#[tokio::test]
+async fn start_action_rejects_adb_logcat_for_device_without_adb() {
+    let app = spawn_app().await;
+
+    let response = app.post_action("board-zeta", "adb.logcat", None).await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.expect("invalid error body");
+    assert_eq!(
+        body["error"],
+        "bad request: device `board-zeta` does not support action `adb.logcat`"
+    );
+}
+
+#[tokio::test]
 async fn start_action_creates_a_job_for_serial_write() {
     let app = spawn_app().await;
 

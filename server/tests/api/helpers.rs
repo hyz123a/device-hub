@@ -11,8 +11,8 @@ use device_hub_server::{
     services::job_manager::JobPolicyProvider,
 };
 use device_hub_shared::{
-    ActionRequest, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig,
-    Job, JobStatus, LogEvent, SerialConfig, SerialExecRequest, SshConfig,
+    ActionRequest, AdbConfig, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort,
+    JlinkConfig, Job, JobStatus, LogEvent, SerialConfig, SerialExecRequest, SshConfig,
 };
 use futures::{StreamExt, future::BoxFuture};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -359,6 +359,7 @@ fn test_config() -> AppConfig {
                     speed_khz: 4000,
                     autoconnect: true,
                 }),
+                adb: None,
             },
             Device {
                 id: "board-alpha".into(),
@@ -374,6 +375,11 @@ fn test_config() -> AppConfig {
                     baud: 115200,
                 }),
                 jlink: None,
+                adb: Some(AdbConfig {
+                    serial: "08211FDD4002KE".into(),
+                    transport: None,
+                    default_logcat_args: vec!["-v".into(), "time".into()],
+                }),
             },
             Device {
                 id: "board-mixed".into(),
@@ -395,11 +401,13 @@ fn test_config() -> AppConfig {
                     speed_khz: 4000,
                     autoconnect: true,
                 }),
+                adb: None,
             },
         ],
         device_registry_path: None,
         ssh_program: None,
         jlink_program: None,
+        adb_program: None,
         artifacts_dir: None,
     }
 }

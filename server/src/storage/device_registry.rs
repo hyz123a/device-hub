@@ -167,6 +167,7 @@ mod tests {
                 speed_khz: 4000,
                 autoconnect: true,
             }),
+            adb: None,
         }
     }
 
@@ -187,6 +188,7 @@ mod tests {
                     baud: 9600,
                 }),
                 jlink: None,
+                adb: None,
             })
             .expect("create device");
 

@@ -1,4 +1,5 @@
 use chrono::Utc;
+use device_hub_adapter_adb::AdbAdapter;
 use device_hub_adapter_jlink::{
     FlashRequest, JlinkAdapter, JlinkAdapterError, JlinkArtifact, JlinkExecution,
 };
@@ -22,6 +23,7 @@ pub struct AdapterActionRunner {
     ssh_adapter: SshAdapter,
     jlink_adapter: JlinkAdapter,
     serial_adapter: SerialAdapter,
+    adb_adapter: AdbAdapter,
     serial_command_executor: DynSerialCommandExecutor,
 }
 
@@ -30,12 +32,14 @@ impl AdapterActionRunner {
         ssh_adapter: SshAdapter,
         jlink_adapter: JlinkAdapter,
         serial_adapter: SerialAdapter,
+        adb_adapter: AdbAdapter,
         serial_command_executor: DynSerialCommandExecutor,
     ) -> Self {
         Self {
             ssh_adapter,
             jlink_adapter,
             serial_adapter,
+            adb_adapter,
             serial_command_executor,
         }
     }
@@ -53,6 +57,7 @@ impl ActionRunner for AdapterActionRunner {
         let ssh_adapter = self.ssh_adapter.clone();
         let jlink_adapter = self.jlink_adapter.clone();
         let serial_adapter = self.serial_adapter.clone();
+        let adb_adapter = self.adb_adapter.clone();
         let serial_command_executor = self.serial_command_executor.clone();
 
         Box::pin(async move {
@@ -90,6 +95,10 @@ impl ActionRunner for AdapterActionRunner {
                         payload.as_ref(),
                     )
                     .await
+                }
+                "adb.logcat" => {
+                    execute_adb_logcat(&context, &adb_adapter, &job, &device, payload.as_ref())
+                        .await
                 }
                 _ => fail_job(
                     &context.jobs,
@@ -361,6 +370,94 @@ async fn execute_serial_tail(
             error.to_string(),
         ),
     }
+}
+
+async fn execute_adb_logcat(
+    context: &ActionExecutionContext,
+    adb_adapter: &AdbAdapter,
+    job: &Job,
+    device: &Device,
+    payload: Option<&ActionRequest>,
+) {
+    let Some(config) = device.adb.as_ref() else {
+        fail_job_with_source(
+            &context.jobs,
+            &context.events,
+            &context.artifacts,
+            job,
+            LogSource::Adb,
+            "device is missing adb configuration",
+        );
+        return;
+    };
+    let args = adb_logcat_args(config, payload);
+
+    context.events.publish(adapter_event_with_source(
+        job,
+        LogSource::Adb,
+        LogChannel::System,
+        LogLevel::Info,
+        format!(
+            "tailing adb logcat from {} with args: {}",
+            config.serial,
+            args.join(" ")
+        ),
+    ));
+
+    match adb_adapter.logcat(config, &args).await {
+        Ok(mut session) => loop {
+            match session.next_line().await {
+                Ok(Some(line)) => context.events.publish(LogEvent {
+                    ts: Utc::now(),
+                    device_id: job.device_id.clone(),
+                    job_id: job.id.clone(),
+                    source: LogSource::Adb,
+                    channel: LogChannel::Stdout,
+                    level: LogLevel::Info,
+                    message: line,
+                }),
+                Ok(None) => {
+                    succeed_job(
+                        &context.jobs,
+                        &context.events,
+                        &context.artifacts,
+                        job,
+                        "adb.logcat completed",
+                    );
+                    break;
+                }
+                Err(error) => {
+                    fail_job_with_source(
+                        &context.jobs,
+                        &context.events,
+                        &context.artifacts,
+                        job,
+                        LogSource::Adb,
+                        error.to_string(),
+                    );
+                    break;
+                }
+            }
+        },
+        Err(error) => fail_job_with_source(
+            &context.jobs,
+            &context.events,
+            &context.artifacts,
+            job,
+            LogSource::Adb,
+            error.to_string(),
+        ),
+    }
+}
+
+fn adb_logcat_args(
+    config: &device_hub_shared::AdbConfig,
+    payload: Option<&ActionRequest>,
+) -> Vec<String> {
+    payload
+        .and_then(|request| request.payload.as_deref())
+        .map(|payload| payload.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_else(|| config.default_logcat_args.clone())
 }
 
 async fn execute_serial_write(

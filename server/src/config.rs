@@ -15,6 +15,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub jlink_program: Option<String>,
     #[serde(default)]
+    pub adb_program: Option<String>,
+    #[serde(default)]
     pub artifacts_dir: Option<String>,
 }
 
