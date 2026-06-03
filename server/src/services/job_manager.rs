@@ -297,6 +297,9 @@ fn default_action_policy(action: &str) -> ActionPolicy {
         "serial.tail" => ActionPolicy::without_timeout(
             "teardown: close the serial stream handle and keep captured logs on disk",
         ),
+        "adb.logcat" => ActionPolicy::without_timeout(
+            "teardown: stop the adb logcat process, release stream resources, and keep captured logs on disk",
+        ),
         "serial.write" => ActionPolicy::new(
             Duration::from_secs(10),
             "teardown: close the serial write handle, release the device lock, and persist the final job state",
@@ -313,7 +316,7 @@ fn default_action_policy(action: &str) -> ActionPolicy {
 }
 
 fn action_requires_exclusive_lock(action: &str) -> bool {
-    !matches!(action, "ssh.tail" | "serial.tail")
+    !matches!(action, "ssh.tail" | "serial.tail" | "adb.logcat")
 }
 
 fn release_device_lock(

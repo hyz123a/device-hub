@@ -82,6 +82,7 @@ fn log_source_label(source: &LogSource) -> &'static str {
         LogSource::Ssh => "ssh",
         LogSource::Serial => "serial",
         LogSource::Jlink => "jlink",
+        LogSource::Adb => "adb",
         LogSource::System => "system",
         LogSource::Job => "job",
     }
@@ -110,6 +111,7 @@ pub enum LogSource {
     Ssh,
     Serial,
     Jlink,
+    Adb,
     System,
     Job,
 }

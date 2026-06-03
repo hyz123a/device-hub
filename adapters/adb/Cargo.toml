@@ -1,0 +1,10 @@
+[package]
+name = "device-hub-adapter-adb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+device-hub-shared = { path = "../../shared" }
+thiserror.workspace = true
+tokio.workspace = true

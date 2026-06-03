@@ -20,6 +20,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
     let pending_action = use_state(|| Option::<String>::None);
     let running_ssh_tail = use_state(|| Option::<ActiveTailStatus>::None);
     let running_serial_tail = use_state(|| Option::<ActiveTailStatus>::None);
+    let running_adb_logcat = use_state(|| Option::<ActiveTailStatus>::None);
     let navigator = use_navigator();
 
     {
@@ -27,6 +28,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
         let error = error.clone();
         let running_ssh_tail = running_ssh_tail.clone();
         let running_serial_tail = running_serial_tail.clone();
+        let running_adb_logcat = running_adb_logcat.clone();
         let device_id = props.device_id.clone();
         use_effect_with(props.device_id.clone(), move |_| {
             spawn_local(async move {
@@ -34,6 +36,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                     Ok(value) => {
                         running_ssh_tail.set(find_active_tail(&value, "ssh.tail"));
                         running_serial_tail.set(find_active_tail(&value, "serial.tail"));
+                        running_adb_logcat.set(find_active_tail(&value, "adb.logcat"));
                         detail.set(Some(value));
                     }
                     Err(err) => error.set(Some(err)),
@@ -437,6 +440,143 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                             html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Starting serial.tail..."}</p> }
                                         } else if action == "serial.tail.stop" {
                                             html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Stopping serial.tail..."}</p> }
+                                        } else {
+                                            Html::default()
+                                        }
+                                    } else {
+                                        Html::default()
+                                    }
+                                }
+                            </article>
+                        }
+                    } else {
+                        Html::default()
+                    }
+                } else {
+                    Html::default()
+                }
+            }
+            {
+                if let Some(detail) = (*detail).clone() {
+                    if detail.capabilities.has_adb {
+                        let device_id = detail.device.id.clone();
+                        let pending_action_value = (*pending_action).clone();
+                        let running_adb_logcat_value = (*running_adb_logcat).clone();
+                        let device_logs_route = Route::DeviceLogs {
+                            device_id: device_id.clone(),
+                        };
+
+                        let on_adb_logcat = {
+                            let device_id = device_id.clone();
+                            let error = error.clone();
+                            let pending_action = pending_action.clone();
+                            let navigator = navigator.clone();
+                            let running_adb_logcat = running_adb_logcat.clone();
+                            Callback::from(move |_| {
+                                let device_id = device_id.clone();
+                                let error = error.clone();
+                                let pending_action = pending_action.clone();
+                                let navigator = navigator.clone();
+                                let running_adb_logcat = running_adb_logcat.clone();
+                                let active_job = (*running_adb_logcat).clone();
+                                let action_label = if active_job.is_some() {
+                                    "adb.logcat.stop"
+                                } else {
+                                    "adb.logcat"
+                                };
+                                pending_action.set(Some(action_label.to_owned()));
+                                spawn_local(async move {
+                                    let result = if let Some(active_job) = active_job {
+                                        api::cancel_job(&active_job.job_id).await
+                                    } else {
+                                        api::start_action(&device_id, "adb.logcat", None).await
+                                    };
+
+                                    match result {
+                                        Ok(job) => {
+                                            pending_action.set(None);
+                                            error.set(None);
+                                            if job.status == JobStatus::Cancelled {
+                                                running_adb_logcat.set(None);
+                                            } else {
+                                                running_adb_logcat.set(Some(active_tail_from_job(&job)));
+                                                if let Some(navigator) = navigator {
+                                                    navigator.push(&Route::JobDetail { job_id: job.id });
+                                                }
+                                            }
+                                        }
+                                        Err(message) => {
+                                            pending_action.set(None);
+                                            error.set(Some(message));
+                                        }
+                                    }
+                                });
+                            })
+                        };
+
+                        html! {
+                            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                                <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"ADB actions"}</span>
+                                <div class="mt-4 flex flex-wrap justify-end gap-3">
+                                    <Link<Route>
+                                        classes="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white"
+                                        to={device_logs_route}
+                                    >{"Open device logs"}</Link<Route>>
+                                </div>
+                                <div class="mt-4 grid items-end gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+                                    <div class="grid gap-2 text-sm text-ink-muted">
+                                        <span>{"Tail Android logcat"}</span>
+                                        <p class="m-0">
+                                            {
+                                                if let Some(job) = running_adb_logcat_value.clone() {
+                                                    format!("ADB logcat streaming is active in {} since {}. Stop it here or open the job page.", job.job_id, job.active_since)
+                                                } else {
+                                                    "Start adb.logcat as a live log job and follow it on the job page.".to_owned()
+                                                }
+                                            }
+                                        </p>
+                                    </div>
+                                    <div class="flex flex-wrap justify-end gap-3">
+                                        {
+                                            if let Some(job) = running_adb_logcat_value.clone() {
+                                                let navigator = navigator.clone();
+                                                let job_id = job.job_id.clone();
+                                                let on_open_adb_logcat = Callback::from(move |_| {
+                                                    if let Some(navigator) = navigator.clone() {
+                                                        navigator.push(&Route::JobDetail { job_id: job_id.clone() });
+                                                    }
+                                                });
+
+                                                html! {
+                                                    <button
+                                                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                        onclick={on_open_adb_logcat}
+                                                        disabled={pending_action_value.is_some()}
+                                                    >{"Open adb.logcat"}</button>
+                                                }
+                                            } else {
+                                                Html::default()
+                                            }
+                                        }
+                                        <button
+                                            class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55"
+                                            onclick={on_adb_logcat}
+                                            disabled={pending_action_value.is_some()}
+                                        >{
+                                            if running_adb_logcat_value.is_some() {
+                                                "Stop adb.logcat"
+                                            } else {
+                                                "Start adb.logcat"
+                                            }
+                                        }</button>
+                                    </div>
+                                </div>
+                                {
+                                    if let Some(action) = pending_action_value {
+                                        if action == "adb.logcat" {
+                                            html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Starting adb.logcat..."}</p> }
+                                        } else if action == "adb.logcat.stop" {
+                                            html! { <p class="mb-0 mt-4 text-sm text-ink-muted">{"Stopping adb.logcat..."}</p> }
                                         } else {
                                             Html::default()
                                         }

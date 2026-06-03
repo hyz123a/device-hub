@@ -5,8 +5,8 @@ use yew_router::prelude::Link;
 
 use crate::{api, app::Route};
 use device_hub_shared::{
-    BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig, SerialConfig,
-    SshConfig, default_ssh_log_path,
+    AdbConfig, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig,
+    SerialConfig, SshConfig, default_adb_logcat_args, default_ssh_log_path,
 };
 
 #[derive(Clone, PartialEq)]
@@ -28,6 +28,10 @@ struct DeviceDraft {
     jlink_interface: String,
     jlink_speed_khz: String,
     jlink_autoconnect: bool,
+    adb_enabled: bool,
+    adb_serial: String,
+    adb_transport: String,
+    adb_default_logcat_args: String,
 }
 
 impl Default for DeviceDraft {
@@ -50,6 +54,10 @@ impl Default for DeviceDraft {
             jlink_interface: "SWD".into(),
             jlink_speed_khz: "4000".into(),
             jlink_autoconnect: true,
+            adb_enabled: false,
+            adb_serial: String::new(),
+            adb_transport: "serial".into(),
+            adb_default_logcat_args: default_adb_logcat_args().join(" "),
         }
     }
 }
@@ -82,6 +90,12 @@ impl DeviceDraft {
             draft.jlink_speed_khz = jlink.speed_khz.to_string();
             draft.jlink_autoconnect = jlink.autoconnect;
         }
+        if let Some(adb) = &device.adb {
+            draft.adb_enabled = true;
+            draft.adb_serial = adb.serial.clone();
+            draft.adb_transport = adb.transport.clone().unwrap_or_else(|| "serial".into());
+            draft.adb_default_logcat_args = adb.default_logcat_args.join(" ");
+        }
 
         draft
     }
@@ -95,7 +109,7 @@ impl DeviceDraft {
         if label.is_empty() {
             return Err("Device label is required".into());
         }
-        if !self.ssh_enabled && !self.serial_enabled && !self.jlink_enabled {
+        if !self.ssh_enabled && !self.serial_enabled && !self.jlink_enabled && !self.adb_enabled {
             return Err("Enable at least one connection before saving".into());
         }
 
@@ -168,12 +182,32 @@ impl DeviceDraft {
             None
         };
 
+        let adb = if self.adb_enabled {
+            let serial = self.adb_serial.trim().to_owned();
+            if serial.is_empty() {
+                return Err("ADB config requires a device serial".into());
+            }
+            let transport = self.adb_transport.trim();
+            if !matches!(transport, "serial" | "usb" | "emulator") {
+                return Err("ADB transport must be serial, usb, or emulator".into());
+            }
+            let default_logcat_args = split_args_or_default(&self.adb_default_logcat_args);
+            Some(AdbConfig {
+                serial,
+                transport: (transport != "serial").then(|| transport.to_owned()),
+                default_logcat_args,
+            })
+        } else {
+            None
+        };
+
         Ok(Device {
             id,
             label,
             ssh,
             serial,
             jlink,
+            adb,
         })
     }
 
@@ -451,6 +485,34 @@ pub fn devices_page() -> Html {
             );
         })
     };
+    let on_adb_enabled = {
+        let draft = draft.clone();
+        Callback::from(move |event: Event| {
+            let checked = event.target_unchecked_into::<HtmlInputElement>().checked();
+            update_draft(&draft, move |next| next.adb_enabled = checked);
+        })
+    };
+    let on_adb_serial_input = {
+        let draft = draft.clone();
+        Callback::from(move |event: InputEvent| {
+            let value = event.target_unchecked_into::<HtmlInputElement>().value();
+            update_draft(&draft, move |next| next.adb_serial = value);
+        })
+    };
+    let on_adb_transport_select = {
+        let draft = draft.clone();
+        Callback::from(move |event: Event| {
+            let value = event.target_unchecked_into::<HtmlSelectElement>().value();
+            update_draft(&draft, move |next| next.adb_transport = value);
+        })
+    };
+    let on_adb_logcat_args_input = {
+        let draft = draft.clone();
+        Callback::from(move |event: InputEvent| {
+            let value = event.target_unchecked_into::<HtmlInputElement>().value();
+            update_draft(&draft, move |next| next.adb_default_logcat_args = value);
+        })
+    };
 
     let on_submit = {
         let draft = draft.clone();
@@ -584,6 +646,7 @@ pub fn devices_page() -> Html {
                                             device.ssh.is_some().then_some("ssh"),
                                             device.serial.is_some().then_some("serial"),
                                             device.jlink.is_some().then_some("jlink"),
+                                            device.adb.is_some().then_some("adb"),
                                         ]
                                         .into_iter()
                                         .flatten()
@@ -694,7 +757,7 @@ pub fn devices_page() -> Html {
                 <h2 class="mb-3 mt-3 text-2xl font-semibold tracking-tight text-ink">
                     {if is_editing { "Edit target" } else { "Register target" }}
                 </h2>
-                <p class="m-0 text-ink-muted">{"Mix SSH, serial, and J-Link capabilities per board. The server validates these settings before saving them into the registry."}</p>
+                <p class="m-0 text-ink-muted">{"Mix SSH, serial, J-Link, and ADB capabilities per target. The server validates these settings before saving them into the registry."}</p>
                 {
                     if let Some(message) = (*notice).clone() {
                         html! { <p class="mb-0 mt-4 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</p> }
@@ -913,6 +976,36 @@ pub fn devices_page() -> Html {
                         }
                     </div>
 
+                    <div class="grid gap-3 rounded-[24px] border border-black/10 bg-slate-950/[0.02] p-4">
+                        <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
+                            <span>{"Enable ADB"}</span>
+                            <input type="checkbox" checked={draft_value.adb_enabled} onchange={on_adb_enabled} disabled={is_submitting} />
+                        </label>
+                        {
+                            if draft_value.adb_enabled {
+                                html! {
+                                    <div class="grid gap-3">
+                                        <div class="grid gap-3 sm:grid-cols-2">
+                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-mono text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.adb_serial.clone()} oninput={on_adb_serial_input} disabled={is_submitting} placeholder="08211FDD4002KE" />
+                                            <select
+                                                class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                                onchange={on_adb_transport_select}
+                                                disabled={is_submitting}
+                                            >
+                                                <option value="serial" selected={draft_value.adb_transport == "serial"}>{"Device serial (-s)"}</option>
+                                                <option value="usb" selected={draft_value.adb_transport == "usb"}>{"USB device (-d)"}</option>
+                                                <option value="emulator" selected={draft_value.adb_transport == "emulator"}>{"Emulator (-e)"}</option>
+                                            </select>
+                                        </div>
+                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-mono text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.adb_default_logcat_args.clone()} oninput={on_adb_logcat_args_input} disabled={is_submitting} placeholder="-v time" />
+                                    </div>
+                                }
+                            } else {
+                                html! { <p class="m-0 text-sm text-ink-muted">{"Enable ADB when the target needs Android logcat streaming."}</p> }
+                            }
+                        }
+                    </div>
+
                     <div class="flex flex-wrap justify-end gap-3">
                         <button
                             class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
@@ -1059,6 +1152,18 @@ fn format_jlink_probe_option(probe: &DiscoveredJlinkProbe) -> String {
         .unwrap_or_else(|| probe.serial.clone())
 }
 
+fn split_args_or_default(args: &str) -> Vec<String> {
+    let parsed = args
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if parsed.is_empty() {
+        default_adb_logcat_args()
+    } else {
+        parsed
+    }
+}
+
 fn autofill_jlink_serial(
     probes: Option<&[DiscoveredJlinkProbe]>,
     current_serial: &str,
@@ -1123,6 +1228,17 @@ mod tests {
             jlink_device: "STM32H743".into(),
             jlink_interface: "SWD".into(),
             jlink_speed_khz: "4000".into(),
+            ..DeviceDraft::default()
+        }
+    }
+
+    fn adb_ready_draft() -> DeviceDraft {
+        DeviceDraft {
+            id: "pixel5".into(),
+            label: "vicohome".into(),
+            adb_enabled: true,
+            adb_serial: "08211FDD4002KE".into(),
+            adb_default_logcat_args: "-v time".into(),
             ..DeviceDraft::default()
         }
     }
@@ -1282,6 +1398,44 @@ mod tests {
         assert_eq!(
             device.ssh.expect("ssh config").default_log_path,
             "/var/log/custom.log"
+        );
+    }
+
+    #[test]
+    fn adb_only_devices_are_valid_and_default_to_serial_selector() {
+        let draft = adb_ready_draft();
+
+        let device = draft.to_device().expect("adb device");
+        let adb = device.adb.expect("adb config");
+        assert_eq!(adb.serial, "08211FDD4002KE");
+        assert_eq!(adb.transport, None);
+        assert_eq!(adb.default_logcat_args, vec!["-v", "time"]);
+        assert!(device.ssh.is_none());
+        assert!(device.serial.is_none());
+        assert!(device.jlink.is_none());
+    }
+
+    #[test]
+    fn adb_logcat_args_default_when_field_is_blank() {
+        let mut draft = adb_ready_draft();
+        draft.adb_default_logcat_args.clear();
+
+        let device = draft.to_device().expect("adb device");
+        assert_eq!(
+            device.adb.expect("adb config").default_logcat_args,
+            vec!["-v", "time"]
+        );
+    }
+
+    #[test]
+    fn adb_usb_transport_is_preserved() {
+        let mut draft = adb_ready_draft();
+        draft.adb_transport = "usb".into();
+
+        let device = draft.to_device().expect("adb usb device");
+        assert_eq!(
+            device.adb.expect("adb config").transport.as_deref(),
+            Some("usb")
         );
     }
 }

@@ -2,6 +2,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
+use device_hub_adapter_adb::AdbAdapter;
 use device_hub_adapter_jlink::JlinkAdapter;
 use device_hub_adapter_serial::SerialAdapter;
 use device_hub_adapter_ssh::SshAdapter;
@@ -109,6 +110,7 @@ async fn build_router_with_components(
         device_registry_path,
         ssh_program,
         jlink_program,
+        adb_program,
         artifacts_dir,
     } = config;
     let artifacts = ArtifactStore::new(artifacts_dir.unwrap_or_else(|| ".artifacts".into()));
@@ -126,6 +128,10 @@ async fn build_router_with_components(
         Some(program) => JlinkAdapter::with_program(program),
         None => JlinkAdapter::new(),
     };
+    let adb_adapter = match adb_program {
+        Some(program) => AdbAdapter::with_program(program),
+        None => AdbAdapter::new(),
+    };
     let host_discovery = host_discovery.unwrap_or_else(|| {
         Arc::new(AdapterHostDiscovery::new(
             serial_adapter.clone(),
@@ -138,6 +144,7 @@ async fn build_router_with_components(
         ssh_adapter,
         jlink_adapter,
         serial_adapter,
+        adb_adapter,
         serial_command_executor.clone(),
     ));
     let frontend = FrontendAssets::load_from_embedded_bundle()

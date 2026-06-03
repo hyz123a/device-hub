@@ -8,6 +8,7 @@ pub struct Device {
     pub ssh: Option<SshConfig>,
     pub serial: Option<SerialConfig>,
     pub jlink: Option<JlinkConfig>,
+    pub adb: Option<AdbConfig>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,6 +23,7 @@ pub struct DeviceConnectionSummary {
     pub has_ssh: bool,
     pub has_serial: bool,
     pub has_jlink: bool,
+    pub has_adb: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,6 +77,15 @@ pub struct JlinkConfig {
     pub autoconnect: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdbConfig {
+    pub serial: String,
+    #[serde(default)]
+    pub transport: Option<String>,
+    #[serde(default = "default_adb_logcat_args")]
+    pub default_logcat_args: Vec<String>,
+}
+
 impl Device {
     pub fn detail(&self) -> DeviceDetail {
         self.detail_with_runtime(DeviceRuntimeStatus::default())
@@ -87,6 +98,7 @@ impl Device {
                 has_ssh: self.ssh.is_some(),
                 has_serial: self.serial.is_some(),
                 has_jlink: self.jlink.is_some(),
+                has_adb: self.adb.is_some(),
             },
             runtime,
         }
@@ -107,6 +119,10 @@ fn default_jlink_autoconnect() -> bool {
 
 pub fn default_ssh_log_path() -> String {
     "/tmp/sdcard/debug_log".into()
+}
+
+pub fn default_adb_logcat_args() -> Vec<String> {
+    vec!["-v".into(), "time".into()]
 }
 
 #[cfg(test)]
