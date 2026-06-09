@@ -273,6 +273,7 @@ name = "device-hub-adapter-adb"
 version = "0.1.0"
 dependencies = [
  "device-hub-shared",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]

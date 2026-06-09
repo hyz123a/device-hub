@@ -3,7 +3,7 @@ use std::{path::PathBuf, process::Stdio};
 use device_hub_shared::AdbConfig;
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader, Lines},
+    io::{AsyncBufReadExt, BufReader},
     process::{Child, ChildStdout, Command},
 };
 
@@ -28,7 +28,7 @@ pub enum AdbAdapterError {
 
 pub struct AdbLogcatSession {
     child: Child,
-    lines: Lines<BufReader<ChildStdout>>,
+    stdout: BufReader<ChildStdout>,
 }
 
 impl AdbAdapter {
@@ -64,7 +64,7 @@ impl AdbAdapter {
 
         Ok(AdbLogcatSession {
             child,
-            lines: BufReader::new(stdout).lines(),
+            stdout: BufReader::new(stdout),
         })
     }
 }
@@ -95,9 +95,9 @@ impl Default for AdbAdapter {
 
 impl AdbLogcatSession {
     pub async fn next_line(&mut self) -> Result<Option<String>, AdbAdapterError> {
-        match self.lines.next_line().await {
-            Ok(Some(line)) => Ok(Some(line)),
-            Ok(None) => {
+        let mut line = Vec::new();
+        match self.stdout.read_until(b'\n', &mut line).await {
+            Ok(0) => {
                 let status = self.child.wait().await.map_err(AdbAdapterError::Read)?;
                 if status.success() {
                     Ok(None)
@@ -105,7 +105,59 @@ impl AdbLogcatSession {
                     Err(AdbAdapterError::Exit(status))
                 }
             }
+            Ok(_) => {
+                if line.ends_with(b"\n") {
+                    line.pop();
+                }
+                if line.ends_with(b"\r") {
+                    line.pop();
+                }
+                Ok(Some(String::from_utf8_lossy(&line).into_owned()))
+            }
             Err(error) => Err(AdbAdapterError::Read(error)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn logcat_decodes_invalid_utf8_lossy_instead_of_failing() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let adb = tempdir.path().join("fake-adb.sh");
+        fs::write(
+            &adb,
+            "#!/bin/sh\nset -eu\nprintf 'valid\\n'\nprintf 'bad \\377\\n'\n",
+        )
+        .expect("write fake adb");
+        let mut permissions = fs::metadata(&adb).expect("fake adb metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&adb, permissions).expect("chmod fake adb");
+
+        let adapter = AdbAdapter::with_program(adb);
+        let config = AdbConfig {
+            serial: "device-1".into(),
+            transport: None,
+            default_logcat_args: vec!["-v".into(), "time".into()],
+        };
+        let mut session = adapter
+            .logcat(&config, &config.default_logcat_args)
+            .await
+            .expect("logcat session");
+
+        assert_eq!(
+            session.next_line().await.expect("first line").as_deref(),
+            Some("valid")
+        );
+        assert_eq!(
+            session.next_line().await.expect("lossy line").as_deref(),
+            Some("bad �")
+        );
+        assert_eq!(session.next_line().await.expect("eof"), None);
     }
 }

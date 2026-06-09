@@ -3,6 +3,8 @@ tmp/
 target/
 frontend/dist/
 frontend/node_modules/
+frontend/playwright-report/
+frontend/test-results/
 bazel-*/
 bazel-bin
 bazel-out

@@ -4,9 +4,12 @@
   "scripts": {
     "build:assets": "npm run build:css && npm run build:xterm-bundle",
     "build:css": "tailwindcss -i ./tailwind.css -o ./style.css",
-    "build:xterm-bundle": "sh -c '[ -d ./bundle/node_modules ] || npm --prefix ./bundle ci; npm --prefix ./bundle run build'"
+    "build:xterm-bundle": "sh -c '[ -d ./bundle/node_modules ] || npm --prefix ./bundle ci; npm --prefix ./bundle run build'",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "tailwindcss": "^3.4.17"
   }
 }

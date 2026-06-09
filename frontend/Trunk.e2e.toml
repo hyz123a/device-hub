@@ -1,0 +1,29 @@
+[serve]
+addresses = ["127.0.0.1"]
+port = 8090
+
+[[hooks]]
+stage = "pre_build"
+command = "npm"
+command_arguments = ["run", "build:assets"]
+
+[[proxy]]
+backend = "http://127.0.0.1:3100/api/devices"
+rewrite = "/api/devices"
+
+[[proxy]]
+backend = "http://127.0.0.1:3100/api/board-profiles"
+rewrite = "/api/board-profiles"
+
+[[proxy]]
+backend = "http://127.0.0.1:3100/api/host"
+rewrite = "/api/host"
+
+[[proxy]]
+backend = "http://127.0.0.1:3100/api/jobs"
+rewrite = "/api/jobs"
+
+[[proxy]]
+backend = "ws://127.0.0.1:3100/api/ws"
+rewrite = "/api/ws"
+ws = true
