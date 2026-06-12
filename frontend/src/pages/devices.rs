@@ -598,7 +598,7 @@ pub fn devices_page() -> Html {
 
     html! {
         <section class="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:row-span-2">
+            <article class="dh-panel rounded-[24px] p-6 xl:row-span-2">
                 <div class="flex flex-wrap items-start justify-between gap-4">
                     <div>
                         <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Registry"}</span>
@@ -606,7 +606,7 @@ pub fn devices_page() -> Html {
                         <p class="m-0 text-ink-muted">{"The control plane now persists device changes in its own registry file, so operators and AI callers can evolve targets without hand-editing startup config."}</p>
                     </div>
                     <button
-                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                        class="rounded-2xl dh-button px-4 py-3 text-sm"
                         onclick={on_reset.clone()}
                         disabled={is_submitting}
                     >
@@ -694,7 +694,7 @@ pub fn devices_page() -> Html {
                                         });
 
                                         html! {
-                                            <div class="flex flex-col gap-4 rounded-[24px] border border-black/10 bg-slate-950/[0.03] p-4 sm:flex-row sm:items-center sm:justify-between">
+                                            <div class="flex flex-col gap-4 dh-surface-muted rounded-[24px] p-4 sm:flex-row sm:items-center sm:justify-between">
                                                 <div class="grid gap-2">
                                                     <div>
                                                         <h3 class="mb-1 mt-0 text-lg font-semibold text-ink">{device.label.clone()}</h3>
@@ -706,7 +706,7 @@ pub fn devices_page() -> Html {
                                                         }) }
                                                         {
                                                             if capability_labels.is_empty() {
-                                                                html! { <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted">{"unconfigured"}</span> }
+                                                                html! { <span class="inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted">{"unconfigured"}</span> }
                                                             } else {
                                                                 Html::default()
                                                             }
@@ -722,7 +722,7 @@ pub fn devices_page() -> Html {
                                                 </div>
                                                 <div class="flex flex-wrap items-center gap-3">
                                                     <button
-                                                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                        class="rounded-2xl dh-button px-4 py-3 text-sm"
                                                         onclick={on_edit}
                                                         disabled={is_submitting}
                                                     >{"Edit"}</button>
@@ -752,7 +752,7 @@ pub fn devices_page() -> Html {
                 </div>
             </article>
 
-            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur">
+            <article class="dh-panel rounded-[24px] p-6">
                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Planner"}</span>
                 <h2 class="mb-3 mt-3 text-2xl font-semibold tracking-tight text-ink">
                     {if is_editing { "Edit target" } else { "Register target" }}
@@ -774,12 +774,12 @@ pub fn devices_page() -> Html {
                 }
             </article>
 
-            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur">
+            <article class="dh-panel rounded-[24px] p-6">
                 <div class="grid gap-4">
                     <label class="grid gap-2 text-sm text-ink-muted">
                         <span>{"Device id"}</span>
                         <input
-                            class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-mono text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10 disabled:bg-slate-100"
+                            class="w-full rounded-2xl dh-input font-mono"
                             value={draft_value.id.clone()}
                             oninput={on_id_input}
                             disabled={is_editing || is_submitting}
@@ -789,7 +789,7 @@ pub fn devices_page() -> Html {
                     <label class="grid gap-2 text-sm text-ink-muted">
                         <span>{"Label"}</span>
                         <input
-                            class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                            class="w-full rounded-2xl dh-input"
                             value={draft_value.label.clone()}
                             oninput={on_label_input}
                             disabled={is_submitting}
@@ -797,7 +797,7 @@ pub fn devices_page() -> Html {
                         />
                     </label>
 
-                    <div class="grid gap-3 rounded-[24px] border border-black/10 bg-slate-950/[0.02] p-4">
+                    <div class="grid gap-3 dh-surface-muted rounded-[24px] p-4">
                         <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
                             <span>{"Enable SSH"}</span>
                             <input type="checkbox" checked={draft_value.ssh_enabled} onchange={on_ssh_enabled} disabled={is_submitting} />
@@ -806,10 +806,10 @@ pub fn devices_page() -> Html {
                             if draft_value.ssh_enabled {
                                 html! {
                                      <div class="grid gap-3">
-                                         <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_host.clone()} oninput={on_ssh_host_input} disabled={is_submitting} placeholder="192.168.1.100" />
-                                         <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_user.clone()} oninput={on_ssh_user_input} disabled={is_submitting} placeholder="root" />
-                                         <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_key.clone()} oninput={on_ssh_key_input} disabled={is_submitting} placeholder="~/.ssh/id_rsa" />
-                                         <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.ssh_default_log_path.clone()} oninput={on_ssh_default_log_path_input} disabled={is_submitting} placeholder="/tmp/sdcard/debug_log" />
+                                         <input class="w-full rounded-2xl dh-input" value={draft_value.ssh_host.clone()} oninput={on_ssh_host_input} disabled={is_submitting} placeholder="192.168.1.100" />
+                                         <input class="w-full rounded-2xl dh-input" value={draft_value.ssh_user.clone()} oninput={on_ssh_user_input} disabled={is_submitting} placeholder="root" />
+                                         <input class="w-full rounded-2xl dh-input" value={draft_value.ssh_key.clone()} oninput={on_ssh_key_input} disabled={is_submitting} placeholder="~/.ssh/id_rsa" />
+                                         <input class="w-full rounded-2xl dh-input" value={draft_value.ssh_default_log_path.clone()} oninput={on_ssh_default_log_path_input} disabled={is_submitting} placeholder="/tmp/sdcard/debug_log" />
                                      </div>
                                  }
                              } else {
@@ -818,7 +818,7 @@ pub fn devices_page() -> Html {
                         }
                     </div>
 
-                    <div class="grid gap-3 rounded-[24px] border border-black/10 bg-slate-950/[0.02] p-4">
+                    <div class="grid gap-3 dh-surface-muted rounded-[24px] p-4">
                         <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
                             <span>{"Enable serial"}</span>
                             <input type="checkbox" checked={draft_value.serial_enabled} onchange={on_serial_enabled} disabled={is_submitting} />
@@ -827,10 +827,10 @@ pub fn devices_page() -> Html {
                             if draft_value.serial_enabled {
                                 html! {
                                     <div class="grid gap-3">
-                                        <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/10 bg-white/50 px-4 py-3 text-sm text-ink-muted">
+                                        <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl dh-surface px-4 py-3 text-sm text-ink-muted">
                                             <span>{"Scan this host for serial character devices, then keep editing the path manually if needed."}</span>
                                             <button
-                                                class="rounded-2xl border border-black/10 bg-white/75 px-4 py-2 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                class="rounded-2xl dh-button px-4 py-2 text-sm"
                                                 onclick={on_refresh_serial_scan.clone()}
                                                 disabled={is_submitting || *serial_scan_loading}
                                             >
@@ -848,7 +848,7 @@ pub fn devices_page() -> Html {
                                                         <label class="grid gap-2 text-sm text-ink-muted">
                                                             <span>{"Scanned serial paths"}</span>
                                                             <select
-                                                                class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                                                class="w-full rounded-2xl dh-input"
                                                                 onchange={on_serial_scan_select}
                                                                 disabled={is_submitting}
                                                             >
@@ -868,8 +868,8 @@ pub fn devices_page() -> Html {
                                             }
                                         }
                                         <div class="grid gap-3 sm:grid-cols-2">
-                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.serial_port.clone()} oninput={on_serial_port_input} disabled={is_submitting} placeholder="/dev/ttyUSB0" />
-                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.serial_baud.clone()} oninput={on_serial_baud_input} disabled={is_submitting} placeholder="115200" />
+                                            <input class="w-full rounded-2xl dh-input" value={draft_value.serial_port.clone()} oninput={on_serial_port_input} disabled={is_submitting} placeholder="/dev/ttyUSB0" />
+                                            <input class="w-full rounded-2xl dh-input" value={draft_value.serial_baud.clone()} oninput={on_serial_baud_input} disabled={is_submitting} placeholder="115200" />
                                         </div>
                                     </div>
                                 }
@@ -879,7 +879,7 @@ pub fn devices_page() -> Html {
                         }
                     </div>
 
-                    <div class="grid gap-3 rounded-[24px] border border-black/10 bg-slate-950/[0.02] p-4">
+                    <div class="grid gap-3 dh-surface-muted rounded-[24px] p-4">
                         <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
                             <span>{"Enable J-Link"}</span>
                             <input type="checkbox" checked={draft_value.jlink_enabled} onchange={on_jlink_enabled} disabled={is_submitting} />
@@ -888,10 +888,10 @@ pub fn devices_page() -> Html {
                             if draft_value.jlink_enabled {
                                 html! {
                                     <div class="grid gap-3">
-                                        <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/10 bg-white/50 px-4 py-3 text-sm text-ink-muted">
+                                        <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl dh-surface px-4 py-3 text-sm text-ink-muted">
                                             <span>{"Scan the host for attached probes, then keep the serial field editable for manual overrides."}</span>
                                             <button
-                                                class="rounded-2xl border border-black/10 bg-white/75 px-4 py-2 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                class="rounded-2xl dh-button px-4 py-2 text-sm"
                                                 onclick={on_refresh_jlink_scan.clone()}
                                                 disabled={is_submitting || *jlink_scan_loading}
                                             >
@@ -909,7 +909,7 @@ pub fn devices_page() -> Html {
                                                         <label class="grid gap-2 text-sm text-ink-muted">
                                                             <span>{"Detected probes"}</span>
                                                             <select
-                                                                class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                                                class="w-full rounded-2xl dh-input"
                                                                 onchange={on_jlink_scan_select}
                                                                 disabled={is_submitting}
                                                             >
@@ -936,7 +936,7 @@ pub fn devices_page() -> Html {
                                                     <label class="grid gap-2 text-sm text-ink-muted">
                                                         <span>{"Board profile"}</span>
                                                         <select
-                                                            class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                                            class="w-full rounded-2xl dh-input"
                                                             onchange={on_jlink_board_profile_select}
                                                             disabled={is_submitting}
                                                         >
@@ -957,12 +957,12 @@ pub fn devices_page() -> Html {
                                             }
                                         }
                                         <div class="grid gap-3 sm:grid-cols-2">
-                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.jlink_serial.clone()} oninput={on_jlink_serial_input} disabled={is_submitting} placeholder="123456789" />
-                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.jlink_device.clone()} oninput={on_jlink_device_input} disabled={is_submitting} placeholder="STM32H743" />
+                                            <input class="w-full rounded-2xl dh-input" value={draft_value.jlink_serial.clone()} oninput={on_jlink_serial_input} disabled={is_submitting} placeholder="123456789" />
+                                            <input class="w-full rounded-2xl dh-input" value={draft_value.jlink_device.clone()} oninput={on_jlink_device_input} disabled={is_submitting} placeholder="STM32H743" />
                                         </div>
                                         <div class="grid gap-3 sm:grid-cols-2">
-                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.jlink_interface.clone()} oninput={on_jlink_interface_input} disabled={is_submitting} placeholder="SWD" />
-                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.jlink_speed_khz.clone()} oninput={on_jlink_speed_input} disabled={is_submitting} placeholder="4000" />
+                                            <input class="w-full rounded-2xl dh-input" value={draft_value.jlink_interface.clone()} oninput={on_jlink_interface_input} disabled={is_submitting} placeholder="SWD" />
+                                            <input class="w-full rounded-2xl dh-input" value={draft_value.jlink_speed_khz.clone()} oninput={on_jlink_speed_input} disabled={is_submitting} placeholder="4000" />
                                         </div>
                                         <label class="flex items-center gap-3 text-sm text-ink-muted">
                                             <input type="checkbox" checked={draft_value.jlink_autoconnect} onchange={on_jlink_autoconnect} disabled={is_submitting} />
@@ -976,7 +976,7 @@ pub fn devices_page() -> Html {
                         }
                     </div>
 
-                    <div class="grid gap-3 rounded-[24px] border border-black/10 bg-slate-950/[0.02] p-4">
+                    <div class="grid gap-3 dh-surface-muted rounded-[24px] p-4">
                         <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
                             <span>{"Enable ADB"}</span>
                             <input type="checkbox" checked={draft_value.adb_enabled} onchange={on_adb_enabled} disabled={is_submitting} />
@@ -986,9 +986,9 @@ pub fn devices_page() -> Html {
                                 html! {
                                     <div class="grid gap-3">
                                         <div class="grid gap-3 sm:grid-cols-2">
-                                            <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-mono text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.adb_serial.clone()} oninput={on_adb_serial_input} disabled={is_submitting} placeholder="08211FDD4002KE" />
+                                            <input class="w-full rounded-2xl dh-input font-mono" value={draft_value.adb_serial.clone()} oninput={on_adb_serial_input} disabled={is_submitting} placeholder="08211FDD4002KE" />
                                             <select
-                                                class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                                class="w-full rounded-2xl dh-input"
                                                 onchange={on_adb_transport_select}
                                                 disabled={is_submitting}
                                             >
@@ -997,7 +997,7 @@ pub fn devices_page() -> Html {
                                                 <option value="emulator" selected={draft_value.adb_transport == "emulator"}>{"Emulator (-e)"}</option>
                                             </select>
                                         </div>
-                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-mono text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={draft_value.adb_default_logcat_args.clone()} oninput={on_adb_logcat_args_input} disabled={is_submitting} placeholder="-v time" />
+                                        <input class="w-full rounded-2xl dh-input font-mono" value={draft_value.adb_default_logcat_args.clone()} oninput={on_adb_logcat_args_input} disabled={is_submitting} placeholder="-v time" />
                                     </div>
                                 }
                             } else {
@@ -1008,7 +1008,7 @@ pub fn devices_page() -> Html {
 
                     <div class="flex flex-wrap justify-end gap-3">
                         <button
-                            class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                            class="rounded-2xl dh-button px-4 py-3 text-sm"
                             onclick={on_reset}
                             disabled={is_submitting}
                         >

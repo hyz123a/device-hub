@@ -474,20 +474,12 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     };
 
     html! {
-        <article class={classes!(
-            "rounded-[24px]",
-            "border",
-            "border-black/10",
-            "bg-white/80",
-            "p-6",
-            "shadow-shell",
-            "backdrop-blur"
-        )}>
+        <article class="dh-panel rounded-[24px] p-6">
             <div class="mb-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_14rem]">
                 <label class="grid gap-2 text-sm text-ink-muted">
                     <span>{"Search logs"}</span>
                     <input
-                        class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                        class="w-full rounded-2xl dh-input"
                         value={(*search_query).clone()}
                         oninput={on_search_input}
                         placeholder="message, source, level, device_id, job_id"
@@ -500,7 +492,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                             let cap = *buffered_event_limit;
                             html! {
                                 <select
-                                    class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                    class="w-full rounded-2xl dh-input"
                                     oninput={on_buffer_limit_change}
                                 >
                                     <option value="5000" selected={cap == 5000}>{"5000"}</option>
@@ -517,7 +509,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
             <div class="flex flex-wrap items-center justify-between gap-3">
                 <div class="flex flex-wrap items-center gap-3">
                     <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Logs"}</span>
-                    <div class="inline-flex rounded-full border border-black/10 bg-white/75 p-1">
+                    <div class="inline-flex rounded-full dh-surface p-1">
                         <button
                             class={toggle_button_class(*view_mode == LogViewMode::Stream)}
                             onclick={on_show_stream_view}
@@ -540,7 +532,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                     {
                         if *view_mode == LogViewMode::Stream {
                             html! {
-                                <div class="inline-flex rounded-full border border-black/10 bg-white/75 p-1">
+                                <div class="inline-flex rounded-full dh-surface p-1">
                                     <button class={filter_button_class(*stream_filter == StreamFilter::All)} onclick={on_filter_all}>{"All"}</button>
                                     <button class={filter_button_class(*stream_filter == StreamFilter::DeviceLogs)} onclick={on_filter_device_logs}>{"Device logs"}</button>
                                     {
@@ -579,8 +571,8 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                         if *view_mode == LogViewMode::Event {
                             html! {
                                 <>
-                                    <button class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55" onclick={on_show_newer} disabled={page == 0}>{"Newer"}</button>
-                                    <button class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55" onclick={on_show_older} disabled={start_index == 0 || total_events == 0}>{"Older"}</button>
+                                    <button class="rounded-2xl dh-button px-4 py-3" onclick={on_show_newer} disabled={page == 0}>{"Newer"}</button>
+                                    <button class="rounded-2xl dh-button px-4 py-3" onclick={on_show_older} disabled={start_index == 0 || total_events == 0}>{"Older"}</button>
                                 </>
                             }
                         } else {
@@ -749,7 +741,7 @@ fn view_stream_terminal(
     on_bottom_state_change: Callback<bool>,
 ) -> Html {
     html! {
-        <div class="overflow-hidden rounded-[20px] border border-black/10 bg-[#111827] shadow-inner">
+        <div class="overflow-hidden rounded-[20px] dh-surface shadow-inner">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-white/5 px-4 py-3">
                 <div class="flex flex-wrap items-center gap-2">
                     <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-100">{"stream"}</span>
@@ -813,7 +805,7 @@ fn connection_status_class(status: &str) -> &'static str {
         "connecting" => {
             "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
         }
-        _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
+        _ => "inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted",
     }
 }
 

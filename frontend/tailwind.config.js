@@ -3,22 +3,22 @@ module.exports = {
   theme: {
     extend: {
       boxShadow: {
-        shell: "0 18px 60px rgba(31, 41, 51, 0.12)",
+        shell: "var(--dh-shadow-shell)",
       },
       colors: {
         sand: {
-          50: "#f8f4ec",
-          100: "#efe8dc",
-          200: "#f3efe7",
+          50: "rgb(var(--dh-page-soft) / <alpha-value>)",
+          100: "rgb(var(--dh-page) / <alpha-value>)",
+          200: "rgb(var(--dh-surface-muted) / <alpha-value>)",
         },
         ink: {
-          DEFAULT: "#1f2933",
-          muted: "#59636e",
+          DEFAULT: "rgb(var(--dh-text) / <alpha-value>)",
+          muted: "rgb(var(--dh-text-muted) / <alpha-value>)",
         },
         accent: {
-          DEFAULT: "#006d77",
-          strong: "#004e57",
-          warm: "#ee9b00",
+          DEFAULT: "rgb(var(--dh-accent) / <alpha-value>)",
+          strong: "rgb(var(--dh-accent-strong) / <alpha-value>)",
+          warm: "rgb(var(--dh-accent-warm) / <alpha-value>)",
         },
       },
       fontFamily: {

@@ -21,7 +21,7 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
             "inline-flex rounded-full bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-strong"
         }
         LogLevel::Debug => {
-            "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted"
+            "inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted"
         }
     };
     let channel_class = match event.channel {
@@ -38,7 +38,7 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
     let entry_class = classes!(
         "border-l-4",
         "border-t",
-        "border-black/10",
+        "border-[rgb(var(--dh-border)/0.32)]",
         "pl-4",
         "pt-4",
         "first:border-t-0",
@@ -56,7 +56,7 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
                 <div class="flex flex-wrap items-center gap-2">
                     <span class={channel_class}>{format_channel(&event.channel)}</span>
                     <span class={level_class}>{format!("{:?}", event.level)}</span>
-                    <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted">{format_source(&event.source)}</span>
+                    <span class="inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted">{format_source(&event.source)}</span>
                 </div>
                 <span class="font-mono text-sm text-ink-muted" title="UTC event timestamp">
                     {format!("{} UTC", event.ts.to_rfc3339())}
@@ -68,7 +68,7 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
                         <div class="mb-3 flex flex-wrap items-center gap-2 font-mono text-xs text-ink-muted">
                             {
                                 if let Some(timestamp) = &message_meta.timestamp {
-                                    html! { <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5">{timestamp.clone()}</span> }
+                                    html! { <span class="inline-flex rounded-full dh-pill px-3 py-1.5">{timestamp.clone()}</span> }
                                 } else {
                                     Html::default()
                                 }
@@ -82,7 +82,7 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
                             }
                             {
                                 if let Some(module) = &message_meta.module {
-                                    html! { <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5">{module.clone()}</span> }
+                                    html! { <span class="inline-flex rounded-full dh-pill px-3 py-1.5">{module.clone()}</span> }
                                 } else {
                                     Html::default()
                                 }
@@ -97,8 +97,8 @@ pub fn log_event_card(props: &LogEventCardProps) -> Html {
                 {render_log_message(&event.message, None)}
             </pre>
             <div class="flex flex-wrap gap-2">
-                <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted">{event.device_id.clone()}</span>
-                <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted">{event.job_id.clone()}</span>
+                <span class="inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted">{event.device_id.clone()}</span>
+                <span class="inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted">{event.job_id.clone()}</span>
             </div>
         </div>
     }
@@ -286,7 +286,7 @@ fn ansi_style_class(style: AnsiStyle) -> Classes {
 fn detected_level_class(level: DetectedLevel) -> &'static str {
     match level {
         DetectedLevel::Trace => {
-            "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-slate-500"
+            "inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-slate-500"
         }
         DetectedLevel::Debug => {
             "inline-flex rounded-full bg-slate-500/15 px-3 py-1.5 text-xs font-medium text-slate-700"

@@ -103,12 +103,12 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
         "connecting" => {
             "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
         }
-        _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
+        _ => "inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted",
     };
 
     html! {
         <section class="grid gap-5 xl:grid-cols-2">
-            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+            <article class="dh-panel rounded-[24px] p-6 xl:col-span-2">
                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Live logs"}</span>
                 <h2 class="mb-3 mt-3 text-3xl font-semibold tracking-tight text-ink">{"WebSocket event stream"}</h2>
                 <p class="m-0 text-ink-muted">{
@@ -126,7 +126,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                             if props.device_id.is_some() {
                                 html! {
                                     <input
-                                        class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                        class="w-full rounded-2xl dh-input"
                                         value={(*device_filter).clone()}
                                         oninput={on_device_input.clone()}
                                         placeholder="board-alpha"
@@ -136,7 +136,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                             } else if let Some(devices) = (*available_devices).clone() {
                                 html! {
                                     <select
-                                        class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                        class="w-full rounded-2xl dh-input"
                                         value={(*device_filter).clone()}
                                         onchange={on_device_select}
                                     >
@@ -154,7 +154,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                             } else {
                                 html! {
                                     <input
-                                        class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                        class="w-full rounded-2xl dh-input"
                                         value={(*device_filter).clone()}
                                         oninput={on_device_input.clone()}
                                         placeholder="board-alpha"
@@ -172,7 +172,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
                     </label>
                     <label class="grid gap-2 text-sm text-ink-muted">
                         <span>{"Job filter"}</span>
-                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={(*job_filter).clone()} oninput={on_job_input} placeholder="job_123" />
+                        <input class="w-full rounded-2xl dh-input" value={(*job_filter).clone()} oninput={on_job_input} placeholder="job_123" />
                     </label>
                     <button class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95" onclick={on_reconnect}>{"Reconnect stream"}</button>
                 </div>

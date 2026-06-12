@@ -3,16 +3,57 @@
 @tailwind utilities;
 
 @layer base {
+  :root,
+  [data-theme="dracula"] {
+    --dh-page: 40 42 54;
+    --dh-page-soft: 52 55 70;
+    --dh-panel: 68 71 90;
+    --dh-surface: 68 71 90;
+    --dh-surface-muted: 33 34 44;
+    --dh-border: 98 114 164;
+    --dh-text: 248 248 242;
+    --dh-text-muted: 199 201 217;
+    --dh-accent: 139 233 253;
+    --dh-accent-strong: 189 147 249;
+    --dh-accent-warm: 255 184 108;
+    --dh-danger: 255 85 85;
+    --dh-shadow-shell: 0 18px 60px rgba(0, 0, 0, 0.28);
+    --dh-page-background: linear-gradient(180deg, #343746 0%, #282a36 42%, #21222c 100%);
+    --dh-panel-alpha: 0.86;
+    --dh-surface-alpha: 0.74;
+    --dh-surface-muted-alpha: 0.38;
+  }
+
+  [data-theme="light"] {
+    --dh-page: 248 250 252;
+    --dh-page-soft: 255 255 255;
+    --dh-panel: 255 255 255;
+    --dh-surface: 255 255 255;
+    --dh-surface-muted: 241 245 249;
+    --dh-border: 15 23 42;
+    --dh-text: 15 23 42;
+    --dh-text-muted: 100 116 139;
+    --dh-accent: 0 109 119;
+    --dh-accent-strong: 0 78 87;
+    --dh-accent-warm: 238 155 0;
+    --dh-danger: 185 28 28;
+    --dh-shadow-shell: 0 18px 60px rgba(31, 41, 51, 0.12);
+    --dh-page-background:
+      radial-gradient(circle at top left, rgba(238, 155, 0, 0.18), transparent 28%),
+      radial-gradient(circle at top right, rgba(0, 109, 119, 0.16), transparent 30%),
+      linear-gradient(180deg, #f8f4ec 0%, #efe8dc 100%);
+    --dh-panel-alpha: 0.8;
+    --dh-surface-alpha: 0.75;
+    --dh-surface-muted-alpha: 0.42;
+  }
+
   * {
     box-sizing: border-box;
   }
 
   body {
     @apply m-0 min-h-screen bg-sand-100 font-sans text-ink;
-    background:
-      radial-gradient(circle at top left, rgba(238, 155, 0, 0.18), transparent 28%),
-      radial-gradient(circle at top right, rgba(0, 109, 119, 0.16), transparent 30%),
-      linear-gradient(180deg, #f8f4ec 0%, #efe8dc 100%);
+    background: var(--dh-page-background);
   }
 
   a {
@@ -21,6 +62,78 @@
 }
 
 @layer components {
+  .dh-panel {
+    @apply border shadow-shell backdrop-blur;
+    background-color: rgb(var(--dh-panel) / var(--dh-panel-alpha));
+    border-color: rgb(var(--dh-border) / 0.32);
+  }
+
+  .dh-surface {
+    @apply border;
+    background-color: rgb(var(--dh-surface) / var(--dh-surface-alpha));
+    border-color: rgb(var(--dh-border) / 0.32);
+  }
+
+  .dh-surface-muted {
+    @apply border;
+    background-color: rgb(var(--dh-surface-muted) / var(--dh-surface-muted-alpha));
+    border-color: rgb(var(--dh-border) / 0.28);
+  }
+
+  .dh-input {
+    @apply border px-4 py-3 text-ink outline-none transition;
+    background-color: rgb(var(--dh-surface) / var(--dh-surface-alpha));
+    border-color: rgb(var(--dh-border) / 0.32);
+  }
+
+  .dh-input::placeholder {
+    color: rgb(var(--dh-text-muted) / 0.58);
+  }
+
+  .dh-input:focus {
+    border-color: rgb(var(--dh-accent) / 0.44);
+    box-shadow: 0 0 0 2px rgb(var(--dh-accent) / 0.12);
+  }
+
+  .dh-input:disabled {
+    background-color: rgb(var(--dh-surface-muted) / 0.72);
+    cursor: default;
+    opacity: 0.62;
+  }
+
+  .dh-button {
+    @apply border font-medium text-ink transition disabled:cursor-default disabled:opacity-55;
+    background-color: rgb(var(--dh-surface) / var(--dh-surface-alpha));
+    border-color: rgb(var(--dh-border) / 0.32);
+  }
+
+  .dh-button:hover:not(:disabled) {
+    background-color: rgb(var(--dh-surface) / 0.95);
+  }
+
+  .dh-nav-link {
+    @apply rounded-full border px-4 py-2.5 text-sm font-medium text-ink transition;
+    background-color: rgb(var(--dh-surface) / 0.58);
+    border-color: rgb(var(--dh-border) / 0.32);
+  }
+
+  .dh-nav-link:hover {
+    background-color: rgb(var(--dh-surface) / 0.88);
+    border-color: rgb(var(--dh-accent) / 0.36);
+    color: rgb(var(--dh-accent-strong));
+  }
+
+  .dh-pill {
+    background-color: rgb(var(--dh-surface-muted) / var(--dh-surface-muted-alpha));
+    color: rgb(var(--dh-text-muted));
+  }
+
+  .dh-danger-surface {
+    background-color: rgb(var(--dh-danger) / 0.12);
+    border-color: rgb(var(--dh-danger) / 0.35);
+    color: rgb(var(--dh-danger));
+  }
+
   .xterm-shell .xterm {
     height: 100%;
   }
@@ -28,7 +141,7 @@
   .xterm-shell .xterm-viewport {
     overflow-y: auto !important;
     scrollbar-width: thin;
-    scrollbar-color: rgba(148, 163, 184, 0.55) rgba(15, 23, 42, 0.35);
+    scrollbar-color: rgba(139, 233, 253, 0.45) rgba(68, 71, 90, 0.55);
   }
 
   .xterm-shell .xterm-viewport::-webkit-scrollbar {
@@ -36,16 +149,16 @@
   }
 
   .xterm-shell .xterm-viewport::-webkit-scrollbar-track {
-    background: rgba(15, 23, 42, 0.35);
+    background: rgba(68, 71, 90, 0.55);
   }
 
   .xterm-shell .xterm-viewport::-webkit-scrollbar-thumb {
-    border: 2px solid rgba(15, 23, 42, 0.35);
+    border: 2px solid rgba(68, 71, 90, 0.55);
     border-radius: 9999px;
-    background: rgba(148, 163, 184, 0.55);
+    background: rgba(139, 233, 253, 0.45);
   }
 
   .xterm-shell .xterm-viewport::-webkit-scrollbar-thumb:hover {
-    background: rgba(148, 163, 184, 0.78);
+    background: rgba(139, 233, 253, 0.72);
   }
 }

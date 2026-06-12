@@ -102,22 +102,22 @@ pub fn serial_write_panel(props: &SerialWritePanelProps) -> Html {
                 </div>
                 <div class="flex flex-wrap justify-end gap-2.5">
                     <button
-                        class="rounded-2xl border border-white/8 bg-white/[0.04] px-3.5 py-2.5 font-medium text-slate-100 transition hover:bg-white/10 disabled:cursor-default disabled:opacity-55"
+                        class="rounded-2xl dh-button px-3.5 py-2.5 text-slate-100"
                         onclick={on_serial_ctrl_c}
                         disabled={*pending_action}
                     >{"Send Ctrl-C"}</button>
                     <button
-                        class="rounded-2xl border border-white/8 bg-white/[0.04] px-3.5 py-2.5 font-medium text-slate-100 transition hover:bg-white/10 disabled:cursor-default disabled:opacity-55"
+                        class="rounded-2xl dh-button px-3.5 py-2.5 text-slate-100"
                         onclick={on_serial_ctrl_d}
                         disabled={*pending_action}
                     >{"Send Ctrl-D"}</button>
                     <button
-                        class="rounded-2xl border border-white/8 bg-white/[0.04] px-3.5 py-2.5 font-medium text-slate-100 transition hover:bg-white/10 disabled:cursor-default disabled:opacity-55"
+                        class="rounded-2xl dh-button px-3.5 py-2.5 text-slate-100"
                         onclick={on_serial_escape}
                         disabled={*pending_action}
                     >{"Send Esc"}</button>
                     <button
-                        class="rounded-2xl border border-white/8 bg-white/[0.04] px-3.5 py-2.5 font-medium text-slate-100 transition hover:bg-white/10 disabled:cursor-default disabled:opacity-55"
+                        class="rounded-2xl dh-button px-3.5 py-2.5 text-slate-100"
                         onclick={on_serial_write}
                         disabled={*pending_action}
                     >{"Send raw"}</button>

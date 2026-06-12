@@ -103,7 +103,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
         "connecting" => {
             "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
         }
-        _ => "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted",
+        _ => "inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted",
     };
 
     let job_evidence = (*evidence).clone();
@@ -144,7 +144,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
 
     html! {
         <section class="grid gap-5">
-            <article class="min-w-0 rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur">
+            <article class="min-w-0 dh-panel rounded-[24px] p-6">
                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Job"}</span>
                 {
                     if let Some(message) = (*error).clone() {
@@ -159,11 +159,11 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                                 <div class="mt-4 flex flex-wrap items-center gap-3">
                                     <span class={job_status_class(&job.status)}>{format!("{:?}", job.status)}</span>
                                     <span class={status_class}>{(*connection).clone()}</span>
-                                    <span class="inline-flex rounded-full bg-black/5 px-3 py-1.5 font-mono text-xs text-ink-muted">{timeout_label}</span>
+                                    <span class="inline-flex rounded-full dh-pill px-3 py-1.5 font-mono text-xs text-ink-muted">{timeout_label}</span>
                                 </div>
                                 <div class="mt-4 flex flex-wrap gap-3">
                                     <button
-                                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                        class="rounded-2xl dh-button px-4 py-3 text-sm"
                                         onclick={on_rerun.clone()}
                                         disabled={*rerun_pending}
                                     >{if *rerun_pending { "Rerunning..." } else { "Rerun with same inputs" }}</button>
@@ -172,7 +172,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                                     if let Some(evidence) = job_evidence.clone() {
                                         html! {
                                             <div class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">
-                                                <div class="rounded-[20px] border border-black/10 bg-black/[0.02] p-4">
+                                                <div class="dh-surface-muted rounded-[20px] p-4">
                                                     <h3 class="m-0 text-lg font-semibold text-ink">{"Evidence summary"}</h3>
                                                     <p class="mb-0 mt-3 text-sm text-ink-muted">{evidence.summary.headline.clone()}</p>
                                                     {
@@ -191,7 +191,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                                                         })}
                                                     </div>
                                                 </div>
-                                                <div class="rounded-[20px] border border-black/10 bg-black/[0.02] p-4">
+                                                <div class="dh-surface-muted rounded-[20px] p-4">
                                                     <h3 class="m-0 text-lg font-semibold text-ink">{"Artifacts"}</h3>
                                                     <div class="mt-3 grid gap-2">
                                                         {render_artifacts(&evidence.artifacts)}
@@ -243,7 +243,7 @@ fn job_status_class(status: &JobStatus) -> &'static str {
             "inline-flex rounded-full bg-red-700/10 px-3 py-1.5 text-xs font-medium text-red-700"
         }
         JobStatus::Cancelled => {
-            "inline-flex rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium text-ink-muted"
+            "inline-flex rounded-full dh-pill px-3 py-1.5 text-xs font-medium text-ink-muted"
         }
         JobStatus::Pending | JobStatus::Running => {
             "inline-flex rounded-full bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-800"
@@ -273,7 +273,7 @@ fn render_artifacts(artifacts: &[JobArtifact]) -> Html {
     html! {
         for artifacts.iter().map(|artifact| html! {
             <a
-                class="flex items-center justify-between gap-3 rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm text-ink transition hover:bg-white"
+                class="flex items-center justify-between gap-3 rounded-2xl dh-button px-4 py-3 text-sm"
                 href={api::artifact_url(&artifact.download_url)}
                 target="_blank"
                 rel="noreferrer"

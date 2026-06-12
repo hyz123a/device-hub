@@ -48,7 +48,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
 
     html! {
         <section class="grid gap-5 xl:grid-cols-2">
-            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+            <article class="dh-panel rounded-[24px] p-6 xl:col-span-2">
                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Device detail"}</span>
                 {
                     if let Some(message) = (*error).clone() {
@@ -58,7 +58,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                             <>
                                 <h2 class="mb-2 mt-3 text-3xl font-semibold tracking-tight text-ink">{detail.device.label}</h2>
                                 <p class="m-0 font-mono text-sm text-ink-muted">{detail.device.id}</p>
-                                <div class="mt-5 flex flex-col gap-4 border-t border-black/10 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                                <div class="mt-5 flex flex-col gap-4 border-t border-[rgb(var(--dh-border)/0.32)] pt-4 sm:flex-row sm:items-center sm:justify-between">
                                     <div>
                                         <h3 class="mb-1 mt-0 text-lg font-semibold text-ink">{"SSH"}</h3>
                                         <p class="m-0 text-ink-muted">{if detail.capabilities.has_ssh { "Configured" } else { "Unavailable" }}</p>
@@ -225,18 +225,18 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                         };
 
                         html! {
-                            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                            <article class="dh-panel rounded-[24px] p-6 xl:col-span-2">
                                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"SSH actions"}</span>
                                 <div class="mt-4 flex flex-wrap justify-end gap-3">
                                     <Link<Route>
-                                        classes="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white"
+                                        classes="rounded-2xl dh-button px-4 py-3 text-sm"
                                         to={device_logs_route.clone()}
                                     >{"Open device logs"}</Link<Route>>
                                 </div>
                                 <div class="mt-4 grid items-end gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
                                     <label class="grid gap-2 text-sm text-ink-muted">
                                         <span>{"Command"}</span>
-                                        <input class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10" value={exec_command_value} oninput={on_exec_input} />
+                                        <input class="w-full rounded-2xl dh-input" value={exec_command_value} oninput={on_exec_input} />
                                     </label>
                                     <button
                                         class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95 disabled:cursor-default disabled:opacity-55"
@@ -246,7 +246,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                     <label class="grid gap-2 text-sm text-ink-muted">
                                         <span>{"Log path"}</span>
                                         <input
-                                            class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                            class="w-full rounded-2xl dh-input"
                                             value={tail_path_value}
                                             oninput={on_tail_input}
                                             placeholder={default_ssh_log_path.clone()}
@@ -266,7 +266,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
 
                                                 html! {
                                                     <button
-                                                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                        class="rounded-2xl dh-button px-4 py-3"
                                                         onclick={on_open_ssh_tail}
                                                         disabled={pending_action_value.is_some()}
                                                     >{"Open ssh.tail"}</button>
@@ -378,11 +378,11 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                         };
 
                         html! {
-                            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                            <article class="dh-panel rounded-[24px] p-6 xl:col-span-2">
                                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Serial actions"}</span>
                                 <div class="mt-4 flex flex-wrap justify-end gap-3">
                                     <Link<Route>
-                                        classes="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white"
+                                        classes="rounded-2xl dh-button px-4 py-3 text-sm"
                                         to={device_logs_route}
                                     >{"Open device logs"}</Link<Route>>
                                 </div>
@@ -412,7 +412,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
 
                                                 html! {
                                                     <button
-                                                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                        class="rounded-2xl dh-button px-4 py-3"
                                                         onclick={on_open_serial_tail}
                                                         disabled={pending_action_value.is_some()}
                                                     >{"Open serial.tail"}</button>
@@ -515,11 +515,11 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                         };
 
                         html! {
-                            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                            <article class="dh-panel rounded-[24px] p-6 xl:col-span-2">
                                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"ADB actions"}</span>
                                 <div class="mt-4 flex flex-wrap justify-end gap-3">
                                     <Link<Route>
-                                        classes="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-sm font-medium text-ink transition hover:bg-white"
+                                        classes="rounded-2xl dh-button px-4 py-3 text-sm"
                                         to={device_logs_route}
                                     >{"Open device logs"}</Link<Route>>
                                 </div>
@@ -549,7 +549,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
 
                                                 html! {
                                                     <button
-                                                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white disabled:cursor-default disabled:opacity-55"
+                                                        class="rounded-2xl dh-button px-4 py-3"
                                                         onclick={on_open_adb_logcat}
                                                         disabled={pending_action_value.is_some()}
                                                     >{"Open adb.logcat"}</button>
@@ -727,7 +727,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                         };
 
                         html! {
-                            <article class="rounded-[24px] border border-black/10 bg-white/80 p-6 shadow-shell backdrop-blur xl:col-span-2">
+                            <article class="dh-panel rounded-[24px] p-6 xl:col-span-2">
                                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"J-Link actions"}</span>
                                 <div class="mt-4 grid items-end gap-4 md:grid-cols-[minmax(0,1fr)_auto_auto]">
                                     <div class="grid gap-2 text-sm text-ink-muted">
@@ -742,7 +742,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                     <label class="grid gap-2 text-sm text-ink-muted md:col-span-2">
                                         <span>{"Firmware path"}</span>
                                         <input
-                                            class="w-full rounded-2xl border border-black/10 bg-white/75 px-4 py-3 text-ink outline-none transition placeholder:text-ink-muted/70 focus:border-accent/40 focus:ring-2 focus:ring-accent/10"
+                                            class="w-full rounded-2xl dh-input"
                                             value={jlink_firmware_path_value}
                                             oninput={on_jlink_firmware_input}
                                             placeholder="/tmp/firmware.bin"
