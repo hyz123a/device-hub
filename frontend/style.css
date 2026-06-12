@@ -647,18 +647,6 @@ a {
   position: static;
 }
 
-.fixed {
-  position: fixed;
-}
-
-.inset-4 {
-  inset: 1rem;
-}
-
-.z-\[70\] {
-  z-index: 70;
-}
-
 .m-0 {
   margin: 0px;
 }
@@ -736,16 +724,8 @@ a {
   display: grid;
 }
 
-.hidden {
-  display: none;
-}
-
 .max-h-\[70vh\] {
   max-height: 70vh;
-}
-
-.max-h-\[calc\(100vh-14rem\)\] {
-  max-height: calc(100vh - 14rem);
 }
 
 .min-h-28 {
@@ -818,10 +798,6 @@ a {
 
 .gap-5 {
   gap: 1.25rem;
-}
-
-.overflow-auto {
-  overflow: auto;
 }
 
 .overflow-hidden {
@@ -1003,10 +979,6 @@ a {
 
 .bg-white\/80 {
   background-color: rgb(255 255 255 / 0.8);
-}
-
-.bg-white\/95 {
-  background-color: rgb(255 255 255 / 0.95);
 }
 
 .bg-white\/\[0\.04\] {

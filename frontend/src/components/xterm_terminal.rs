@@ -10,8 +10,6 @@ pub struct XtermTerminalProps {
     pub scroll_to_bottom_revision: u32,
     #[prop_or_default]
     pub on_bottom_state_change: Callback<bool>,
-    #[prop_or_default]
-    pub logs_fullscreen: bool,
 }
 
 #[wasm_bindgen]
@@ -118,16 +116,6 @@ pub fn xterm_terminal(props: &XtermTerminalProps) -> Html {
 
     {
         let terminal_handle = terminal_handle.clone();
-        use_effect_with(props.logs_fullscreen, move |_| {
-            if let Some(handle) = terminal_handle.borrow().as_ref() {
-                let _ = device_hub_fit_terminal(handle);
-            }
-            || {}
-        });
-    }
-
-    {
-        let terminal_handle = terminal_handle.clone();
         use_effect_with(props.scroll_to_bottom_revision, move |_| {
             if let Some(handle) = terminal_handle.borrow().as_ref() {
                 let _ = device_hub_scroll_to_bottom(handle);
@@ -144,11 +132,7 @@ pub fn xterm_terminal(props: &XtermTerminalProps) -> Html {
                 "min-w-0",
                 "px-4",
                 "py-4",
-                if props.logs_fullscreen {
-                    Some("max-h-[calc(100vh-14rem)]")
-                } else {
-                    Some("max-h-[70vh]")
-                }
+                "max-h-[70vh]"
             )}
         />
     }

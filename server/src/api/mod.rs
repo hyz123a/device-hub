@@ -202,6 +202,7 @@ pub struct JobEventsQuery {
     pub source: Option<LogSource>,
     pub level: Option<LogLevel>,
     pub search: Option<String>,
+    pub tail: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -332,6 +333,7 @@ fn artifact_content_type(name: &str) -> HeaderValue {
     match name.rsplit('.').next() {
         Some("json") => HeaderValue::from_static("application/json"),
         Some("ndjson") => HeaderValue::from_static("application/x-ndjson"),
+        Some("log") | Some("txt") => HeaderValue::from_static("text/plain; charset=utf-8"),
         _ => HeaderValue::from_static("application/octet-stream"),
     }
 }
@@ -344,10 +346,19 @@ fn filter_job_events(events: Vec<LogEvent>, query: &JobEventsQuery) -> Vec<LogEv
         ..EventFilter::default()
     };
 
-    events
+    let events = events
         .into_iter()
         .filter(|event| filter.matches(event))
-        .collect()
+        .collect::<Vec<_>>();
+    tail_events(events, query.tail)
+}
+
+fn tail_events(events: Vec<LogEvent>, tail: Option<usize>) -> Vec<LogEvent> {
+    let Some(tail) = tail else {
+        return events;
+    };
+    let start = events.len().saturating_sub(tail);
+    events.into_iter().skip(start).collect()
 }
 
 struct GlobalEventFilter {

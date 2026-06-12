@@ -1875,6 +1875,29 @@ exit 0",
     assert!(events.len() > 1_000);
     assert!(events.iter().any(|event| event.message == "line-1"));
     assert!(events.iter().any(|event| event.message == "line-1105"));
+
+    let tail_response = app
+        .api_client
+        .get(app.endpoint(&format!("/api/jobs/{}/events?tail=5", created.id)))
+        .send()
+        .await
+        .expect("tail events request");
+    assert!(tail_response.status().is_success());
+    let tail_events: Vec<device_hub_shared::LogEvent> = tail_response
+        .json()
+        .await
+        .expect("invalid persisted tail events json");
+    assert_eq!(tail_events.len(), 5);
+    assert!(!tail_events.iter().any(|event| event.message == "line-1"));
+    assert!(tail_events.iter().any(|event| event.message == "line-1105"));
+
+    let raw_stream = app
+        .download_job_artifact(&created.id, "raw-stream.log")
+        .await;
+    assert!(raw_stream.status().is_success());
+    let raw_stream = raw_stream.text().await.expect("read raw stream artifact");
+    assert!(raw_stream.contains("line-1"));
+    assert!(raw_stream.contains("line-1105"));
 }
 
 #[tokio::test]
@@ -1931,6 +1954,12 @@ async fn get_job_evidence_returns_summary_and_downloadable_artifacts() {
             .iter()
             .any(|artifact| artifact.name == "events.ndjson")
     );
+    assert!(
+        evidence
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.name == "raw-stream.log")
+    );
 
     let download = app.download_job_artifact(&created.id, "job.json").await;
     assert!(download.status().is_success());
@@ -1944,6 +1973,22 @@ async fn get_job_evidence_returns_summary_and_downloadable_artifacts() {
             .expect("header string")
             .contains("job.json")
     );
+
+    let raw_stream = app
+        .download_job_artifact(&created.id, "raw-stream.log")
+        .await;
+    assert!(raw_stream.status().is_success());
+    let content_type = raw_stream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .expect("raw stream content type")
+        .to_str()
+        .expect("header string");
+    assert_eq!(content_type, "text/plain; charset=utf-8");
+    let raw_stream = raw_stream.text().await.expect("read raw stream artifact");
+    assert!(raw_stream.contains("boot ok"));
+    assert!(raw_stream.contains("crc mismatch"));
+    assert!(!raw_stream.contains('{'));
 }
 
 #[tokio::test]

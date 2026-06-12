@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use device_hub_shared::{Job, JobArtifact, LogEvent};
+use device_hub_shared::{Job, JobArtifact, LogChannel, LogEvent};
 
 #[derive(Clone, Debug)]
 pub struct ArtifactStore {
@@ -33,7 +33,18 @@ impl ArtifactStore {
             .append(true)
             .open(job_dir.join("events.ndjson"))?;
         serde_json::to_writer(&mut file, event).map_err(io::Error::other)?;
-        file.write_all(b"\n")
+        file.write_all(b"\n")?;
+
+        if matches!(event.channel, LogChannel::Stdout | LogChannel::Stderr) {
+            let mut raw_stream = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(job_dir.join("raw-stream.log"))?;
+            raw_stream.write_all(event.message.as_bytes())?;
+            raw_stream.write_all(b"\n")?;
+        }
+
+        Ok(())
     }
 
     pub fn write_named_artifact(
@@ -164,5 +175,60 @@ mod tests {
             .expect("persisted events");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].message, "job accepted");
+    }
+
+    #[test]
+    fn persists_stdout_and_stderr_events_as_raw_stream_artifact() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::new(tempdir.path());
+        let job = Job {
+            id: "job_123".into(),
+            device_id: "board-alpha".into(),
+            action: "ssh.exec".into(),
+            payload: Some("uname -a".into()),
+            timeout_secs: 30,
+            status: JobStatus::Pending,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        store.init_job(&job).expect("init job");
+
+        store
+            .append_event(&LogEvent {
+                ts: Utc::now(),
+                device_id: job.device_id.clone(),
+                job_id: job.id.clone(),
+                source: LogSource::Job,
+                channel: LogChannel::System,
+                level: LogLevel::Info,
+                message: "job accepted".into(),
+            })
+            .expect("append system event");
+        store
+            .append_event(&LogEvent {
+                ts: Utc::now(),
+                device_id: job.device_id.clone(),
+                job_id: job.id.clone(),
+                source: LogSource::Ssh,
+                channel: LogChannel::Stdout,
+                level: LogLevel::Info,
+                message: "boot ok".into(),
+            })
+            .expect("append stdout event");
+        store
+            .append_event(&LogEvent {
+                ts: Utc::now(),
+                device_id: job.device_id.clone(),
+                job_id: job.id.clone(),
+                source: LogSource::Ssh,
+                channel: LogChannel::Stderr,
+                level: LogLevel::Warn,
+                message: "crc mismatch".into(),
+            })
+            .expect("append stderr event");
+
+        let raw_stream =
+            fs::read_to_string(store.job_dir(&job.id).join("raw-stream.log")).expect("raw stream");
+        assert_eq!(raw_stream, "boot ok\ncrc mismatch\n");
     }
 }

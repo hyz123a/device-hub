@@ -88,8 +88,12 @@ pub async fn get_job_evidence(job_id: &str) -> Result<JobEvidence, String> {
     decode_json(response).await
 }
 
-pub async fn get_job_events(job_id: &str) -> Result<Vec<LogEvent>, String> {
-    let response = Request::get(&format!("{API_PREFIX}/jobs/{job_id}/events"))
+pub async fn get_job_events(job_id: &str, tail: Option<usize>) -> Result<Vec<LogEvent>, String> {
+    let mut url = format!("{API_PREFIX}/jobs/{job_id}/events");
+    if let Some(tail) = tail {
+        url.push_str(&format!("?tail={tail}"));
+    }
+    let response = Request::get(&url)
         .send()
         .await
         .map_err(|err| err.to_string())?;

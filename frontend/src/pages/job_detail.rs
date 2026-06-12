@@ -6,6 +6,8 @@ use yew_router::prelude::*;
 use crate::components::stream_log_panel::StreamLogPanel;
 use crate::{api, app::Route};
 
+const JOB_EVENT_SCROLLBACK_LIMIT: usize = 5_000;
+
 #[derive(Properties, PartialEq)]
 pub struct JobDetailProps {
     pub job_id: String,
@@ -61,7 +63,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                     }
                 }
 
-                match api::get_job_events(&job_id).await {
+                match api::get_job_events(&job_id, Some(JOB_EVENT_SCROLLBACK_LIMIT)).await {
                     Ok(events) => {
                         initial_events.set(events);
                     }
@@ -226,7 +228,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                 connection_status={Some((*connection).clone())}
                 on_connection_change={on_connection_change}
                 on_error={on_ws_error}
-                show_clear_cache={true}
+                show_clear_cache={false}
             />
         </section>
     }

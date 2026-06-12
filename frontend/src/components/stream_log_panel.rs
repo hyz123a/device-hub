@@ -4,9 +4,7 @@ use device_hub_shared::{LogChannel, LogEvent, LogLevel, LogSource};
 use gloo_timers::callback::Timeout;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{
-    ErrorEvent, Event, HtmlInputElement, HtmlSelectElement, MessageEvent, WebSocket, window,
-};
+use web_sys::{ErrorEvent, Event, HtmlInputElement, HtmlSelectElement, MessageEvent, WebSocket};
 use yew::prelude::*;
 
 use crate::api;
@@ -15,7 +13,7 @@ use crate::components::{
 };
 
 const EVENT_PAGE_SIZE: usize = 50;
-const DEFAULT_BUFFERED_EVENTS: usize = 100_000;
+const DEFAULT_BUFFERED_EVENTS: usize = 5_000;
 const MAX_BUFFERED_EVENTS: usize = 100_000;
 const RENDER_FLUSH_DELAY_MS: u32 = 32;
 
@@ -97,7 +95,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     let stream_filter = use_state(|| StreamFilter::DeviceLogs);
     let scroll_to_bottom_revision = use_state(|| 0_u32);
     let stream_at_bottom = use_state(|| true);
-    let logs_fullscreen = use_state(|| false);
     let clear_cache_status = use_state(|| Option::<String>::None);
     let clear_cache_pending = use_state(|| false);
     let socket = use_mut_ref(|| Option::<WsBindings>::None);
@@ -422,11 +419,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         Callback::from(move |_| f.set(StreamFilter::Structured))
     };
 
-    let on_toggle_logs_fullscreen = {
-        let fs = logs_fullscreen.clone();
-        Callback::from(move |_| fs.set(!*fs))
-    };
-
     let on_jump_to_latest = {
         let scroll_to_bottom_revision = scroll_to_bottom_revision.clone();
         Callback::from(move |_| {
@@ -481,14 +473,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         Callback::from(move |at_bottom: bool| stream_at_bottom.set(at_bottom))
     };
 
-    {
-        let fs = logs_fullscreen.clone();
-        use_effect_with(*fs, move |is_fs| {
-            set_page_scroll_locked(*is_fs);
-            || set_page_scroll_locked(false)
-        });
-    }
-
     html! {
         <article class={classes!(
             "rounded-[24px]",
@@ -497,12 +481,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
             "bg-white/80",
             "p-6",
             "shadow-shell",
-            "backdrop-blur",
-            if *logs_fullscreen {
-                Some("fixed inset-4 z-[70] overflow-auto bg-white/95")
-            } else {
-                None
-            }
+            "backdrop-blur"
         )}>
             <div class="mb-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_14rem]">
                 <label class="grid gap-2 text-sm text-ink-muted">
@@ -608,7 +587,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                             html! {
                                 <>
                                     <span class="font-mono text-sm text-ink-muted">{format!("{} streamed events", filtered_stream_events.len())}</span>
-                                    <span class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-mono text-sm text-ink-muted">{"xterm incremental view"}</span>
                                     if !*stream_at_bottom {
                                         <button
                                             class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95"
@@ -619,10 +597,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                             }
                         }
                     }
-                    <button
-                        class="rounded-2xl border border-black/10 bg-white/75 px-4 py-3 font-medium text-ink transition hover:bg-white"
-                        onclick={on_toggle_logs_fullscreen.clone()}
-                    >{if *logs_fullscreen { "Exit full screen" } else { "Full screen" }}</button>
                 </div>
             </div>
             {
@@ -652,7 +626,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                                 filtered_stream_events.as_slice(),
                                 *scroll_to_bottom_revision,
                                 on_bottom_state_change.clone(),
-                                *logs_fullscreen,
                             )}
                         }
                     }
@@ -774,7 +747,6 @@ fn view_stream_terminal(
     stream_events: &[LogEvent],
     scroll_to_bottom_revision: u32,
     on_bottom_state_change: Callback<bool>,
-    logs_fullscreen: bool,
 ) -> Html {
     html! {
         <div class="overflow-hidden rounded-[20px] border border-black/10 bg-[#111827] shadow-inner">
@@ -783,26 +755,13 @@ fn view_stream_terminal(
                     <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-100">{"stream"}</span>
                     <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-300">{format!("{} events", stream_events.len())}</span>
                 </div>
-                <span class="font-mono text-xs text-slate-400">{"xterm incremental stream"}</span>
             </div>
             <XtermTerminal
                 events={stream_events.to_vec()}
                 {scroll_to_bottom_revision}
                 {on_bottom_state_change}
-                {logs_fullscreen}
             />
         </div>
-    }
-}
-
-fn set_page_scroll_locked(locked: bool) {
-    if let Some(body) = window().and_then(|w| w.document()).and_then(|d| d.body()) {
-        let style = body.style();
-        if locked {
-            let _ = style.set_property("overflow", "hidden");
-        } else {
-            let _ = style.remove_property("overflow");
-        }
     }
 }
 
