@@ -13,8 +13,9 @@ use crate::components::{
 };
 
 const EVENT_PAGE_SIZE: usize = 50;
-const DEFAULT_BUFFERED_EVENTS: usize = 5_000;
-const MAX_BUFFERED_EVENTS: usize = 100_000;
+const DEFAULT_BUFFERED_EVENTS: usize = 100_000;
+const MAX_BUFFERED_EVENTS: usize = 1_000_000;
+const BUFFERED_EVENT_LIMIT_OPTIONS: [usize; 4] = [100_000, 200_000, 500_000, 1_000_000];
 const RENDER_FLUSH_DELAY_MS: u32 = 32;
 
 struct WsBindings {
@@ -495,11 +496,15 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                                     class="w-full rounded-2xl dh-input"
                                     oninput={on_buffer_limit_change}
                                 >
-                                    <option value="5000" selected={cap == 5000}>{"5000"}</option>
-                                    <option value="10000" selected={cap == 10000}>{"10000"}</option>
-                                    <option value="20000" selected={cap == 20000}>{"20000"}</option>
-                                    <option value="50000" selected={cap == 50000}>{"50000"}</option>
-                                    <option value="100000" selected={cap == 100000}>{"100000"}</option>
+                                    {
+                                        for BUFFERED_EVENT_LIMIT_OPTIONS.iter().map(|option| {
+                                            html! {
+                                                <option value={option.to_string()} selected={cap == *option}>
+                                                    {option.to_string()}
+                                                </option>
+                                            }
+                                        })
+                                    }
                                 </select>
                             }
                         }
@@ -616,6 +621,11 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                         html! {
                             {view_stream_terminal(
                                 filtered_stream_events.as_slice(),
+                                format!(
+                                    "{}|{}",
+                                    stream_filter_key(&stream_filter),
+                                    search_query_value
+                                ),
                                 *scroll_to_bottom_revision,
                                 on_bottom_state_change.clone(),
                             )}
@@ -731,12 +741,22 @@ pub(crate) fn format_source_label(source: &LogSource) -> &'static str {
     }
 }
 
+fn stream_filter_key(filter: &StreamFilter) -> String {
+    match filter {
+        StreamFilter::All => "all".into(),
+        StreamFilter::DeviceLogs => "device-logs".into(),
+        StreamFilter::Structured => "structured".into(),
+        StreamFilter::Source(source) => format!("source:{}", format_source_label(source)),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stream terminal view
 // ---------------------------------------------------------------------------
 
 fn view_stream_terminal(
     stream_events: &[LogEvent],
+    reset_key: String,
     scroll_to_bottom_revision: u32,
     on_bottom_state_change: Callback<bool>,
 ) -> Html {
@@ -750,6 +770,7 @@ fn view_stream_terminal(
             </div>
             <XtermTerminal
                 events={stream_events.to_vec()}
+                {reset_key}
                 {scroll_to_bottom_revision}
                 {on_bottom_state_change}
             />

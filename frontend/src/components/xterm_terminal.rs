@@ -7,6 +7,8 @@ use yew::prelude::*;
 pub struct XtermTerminalProps {
     pub events: Vec<LogEvent>,
     #[prop_or_default]
+    pub reset_key: String,
+    #[prop_or_default]
     pub scroll_to_bottom_revision: u32,
     #[prop_or_default]
     pub on_bottom_state_change: Callback<bool>,
@@ -44,14 +46,17 @@ pub fn xterm_terminal(props: &XtermTerminalProps) -> Html {
     let container_ref = use_node_ref();
     let terminal_handle = use_mut_ref(|| Option::<JsValue>::None);
     let previous_events = use_mut_ref(Vec::<LogEvent>::new);
+    let previous_reset_key = use_mut_ref(String::new);
     let viewport_change_cb = use_mut_ref(|| Option::<Closure<dyn FnMut(bool)>>::None);
 
     {
         let container_ref = container_ref.clone();
         let terminal_handle = terminal_handle.clone();
         let previous_events = previous_events.clone();
+        let previous_reset_key = previous_reset_key.clone();
         let viewport_change_cb = viewport_change_cb.clone();
         let events = props.events.clone();
+        let reset_key = props.reset_key.clone();
         let on_bottom_state_change = props.on_bottom_state_change.clone();
         use_effect_with((), move |_| {
             if let Some(container) = container_ref.cast::<HtmlElement>() {
@@ -71,6 +76,7 @@ pub fn xterm_terminal(props: &XtermTerminalProps) -> Html {
                         let _ = device_hub_append_terminal(&handle, &snapshot);
                         *previous_events.borrow_mut() = events.clone();
                     }
+                    *previous_reset_key.borrow_mut() = reset_key.clone();
                     *terminal_handle.borrow_mut() = Some(handle);
                     *viewport_change_cb.borrow_mut() = Some(on_viewport_change);
                 }
@@ -88,19 +94,35 @@ pub fn xterm_terminal(props: &XtermTerminalProps) -> Html {
     {
         let terminal_handle = terminal_handle.clone();
         let previous_events = previous_events.clone();
+        let previous_reset_key = previous_reset_key.clone();
         let events = props.events.clone();
-        use_effect_with(events, move |events| {
+        let reset_key = props.reset_key.clone();
+        use_effect_with((events, reset_key), move |(events, reset_key)| {
             if let Some(handle) = terminal_handle.borrow().as_ref() {
                 let mut previous = previous_events.borrow_mut();
+                let mut previous_key = previous_reset_key.borrow_mut();
+                let force_reset = *previous_key != *reset_key;
                 if events.is_empty() {
                     let _ = device_hub_reset_terminal(handle);
                     previous.clear();
-                } else if previous.is_empty() || events.starts_with(previous.as_slice()) {
-                    let appended = format_terminal_events(&events[previous.len()..]);
-                    if !appended.is_empty() {
-                        let _ = device_hub_append_terminal(handle, &appended);
+                    *previous_key = reset_key.clone();
+                } else if !force_reset {
+                    if let Some(appended_events) =
+                        continuing_appended_events(previous.as_slice(), events.as_slice())
+                    {
+                        let appended = format_terminal_events(appended_events);
+                        if !appended.is_empty() {
+                            let _ = device_hub_append_terminal(handle, &appended);
+                        }
+                        *previous = events.clone();
+                    } else {
+                        let snapshot = format_terminal_events(events);
+                        let _ = device_hub_reset_terminal(handle);
+                        if !snapshot.is_empty() {
+                            let _ = device_hub_append_terminal(handle, &snapshot);
+                        }
+                        *previous = events.clone();
                     }
-                    *previous = events.clone();
                 } else {
                     let snapshot = format_terminal_events(events);
                     let _ = device_hub_reset_terminal(handle);
@@ -108,6 +130,7 @@ pub fn xterm_terminal(props: &XtermTerminalProps) -> Html {
                         let _ = device_hub_append_terminal(handle, &snapshot);
                     }
                     *previous = events.clone();
+                    *previous_key = reset_key.clone();
                 }
             }
             || {}
@@ -151,6 +174,34 @@ fn format_raw_terminal_event(message: &str) -> String {
         raw.push('\n');
     }
     raw.replace('\n', "\r\n")
+}
+
+fn continuing_appended_events<'a>(
+    previous: &[LogEvent],
+    events: &'a [LogEvent],
+) -> Option<&'a [LogEvent]> {
+    if previous.is_empty() || events.starts_with(previous) {
+        return Some(&events[previous.len()..]);
+    }
+
+    if previous.len() != events.len() {
+        return None;
+    }
+
+    let overlap = longest_suffix_prefix_overlap(previous, events);
+    if overlap == 0 || overlap == events.len() {
+        return None;
+    }
+
+    Some(&events[overlap..])
+}
+
+fn longest_suffix_prefix_overlap(previous: &[LogEvent], events: &[LogEvent]) -> usize {
+    let max_overlap = previous.len().min(events.len());
+    (1..=max_overlap)
+        .rev()
+        .find(|overlap| previous[previous.len() - overlap..] == events[..*overlap])
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -204,5 +255,50 @@ mod tests {
         let rendered = format_terminal_events(&events);
 
         assert_eq!(rendered, "one\r\ntwo\r\nthree\r\n");
+    }
+
+    #[test]
+    fn continuing_events_append_after_prefix_growth() {
+        let previous = vec![sample_event(1, "board-alpha", "one")];
+        let events = vec![
+            sample_event(1, "board-alpha", "one"),
+            sample_event(2, "board-alpha", "two"),
+        ];
+
+        let appended = continuing_appended_events(&previous, &events).expect("append");
+
+        assert_eq!(appended, &events[1..]);
+    }
+
+    #[test]
+    fn continuing_events_append_after_sliding_window_rollover() {
+        let previous = vec![
+            sample_event(1, "board-alpha", "one"),
+            sample_event(2, "board-alpha", "two"),
+            sample_event(3, "board-alpha", "three"),
+        ];
+        let events = vec![
+            sample_event(2, "board-alpha", "two"),
+            sample_event(3, "board-alpha", "three"),
+            sample_event(4, "board-alpha", "four"),
+        ];
+
+        let appended = continuing_appended_events(&previous, &events).expect("append");
+
+        assert_eq!(appended, &events[2..]);
+    }
+
+    #[test]
+    fn continuing_events_reject_non_contiguous_replacement() {
+        let previous = vec![
+            sample_event(1, "board-alpha", "one"),
+            sample_event(2, "board-alpha", "two"),
+        ];
+        let events = vec![
+            sample_event(10, "board-alpha", "ten"),
+            sample_event(11, "board-alpha", "eleven"),
+        ];
+
+        assert!(continuing_appended_events(&previous, &events).is_none());
     }
 }
