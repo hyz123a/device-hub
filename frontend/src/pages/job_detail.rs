@@ -228,7 +228,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                 connection_status={Some((*connection).clone())}
                 on_connection_change={on_connection_change}
                 on_error={on_ws_error}
-                show_clear_cache={false}
+                show_clear_cache={true}
             />
         </section>
     }

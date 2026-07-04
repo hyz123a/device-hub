@@ -560,11 +560,11 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                 </div>
                 <div class="flex flex-wrap items-center gap-2.5">
                     {
-                        if props.show_clear_cache {
+                        if props.show_clear_cache && *view_mode == LogViewMode::Event {
                             html! {
                                 <button
                                     class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 font-medium text-red-800 transition hover:bg-red-100 disabled:cursor-default disabled:opacity-55"
-                                    onclick={on_clear_cache}
+                                    onclick={on_clear_cache.clone()}
                                     disabled={*clear_cache_pending}
                                 >{if *clear_cache_pending { "Clearing..." } else { "Clear cache" }}</button>
                             }
@@ -583,7 +583,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                         } else {
                             html! {
                                 <>
-                                    <span class="font-mono text-sm text-ink-muted">{format!("{} streamed events", filtered_stream_events.len())}</span>
                                     if !*stream_at_bottom {
                                         <button
                                             class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95"
@@ -628,6 +627,8 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                                 ),
                                 *scroll_to_bottom_revision,
                                 on_bottom_state_change.clone(),
+                                props.show_clear_cache.then_some(on_clear_cache.clone()),
+                                *clear_cache_pending,
                             )}
                         }
                     }
@@ -759,6 +760,8 @@ fn view_stream_terminal(
     reset_key: String,
     scroll_to_bottom_revision: u32,
     on_bottom_state_change: Callback<bool>,
+    on_clear_cache: Option<Callback<MouseEvent>>,
+    clear_cache_pending: bool,
 ) -> Html {
     html! {
         <div class="overflow-hidden rounded-[20px] dh-surface shadow-inner">
@@ -767,6 +770,19 @@ fn view_stream_terminal(
                     <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-100">{"stream"}</span>
                     <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-300">{format!("{} events", stream_events.len())}</span>
                 </div>
+                {
+                    if let Some(on_clear_cache) = on_clear_cache {
+                        html! {
+                            <button
+                                class="rounded-full border border-white/10 bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-100 transition hover:bg-white/15 disabled:cursor-default disabled:opacity-55"
+                                onclick={on_clear_cache}
+                                disabled={clear_cache_pending}
+                            >{if clear_cache_pending { "Clearing..." } else { "Clear cache" }}</button>
+                        }
+                    } else {
+                        Html::default()
+                    }
+                }
             </div>
             <XtermTerminal
                 events={stream_events.to_vec()}
