@@ -126,31 +126,42 @@ impl JobManager {
                 }
             };
 
-            if timed_out {
-                if let Some(running) = context.jobs.get(&job_id) {
-                    let timeout_secs = policy.timeout_secs();
-                    context.events.publish(adapter_event_with_source(
-                        &running,
-                        LogSource::System,
-                        LogChannel::System,
-                        LogLevel::Warn,
-                        format!("action timed out after {timeout_secs}s"),
-                    ));
-                    context.events.publish(adapter_event_with_source(
-                        &running,
-                        LogSource::System,
-                        LogChannel::System,
-                        LogLevel::Info,
-                        policy.teardown_note,
-                    ));
-                    crate::services::job_runtime::fail_job(
-                        &context.jobs,
-                        &context.events,
-                        &context.artifacts,
-                        &running,
-                        format!("action timed out after {timeout_secs}s"),
-                    );
-                }
+            if timed_out && let Some(running) = context.jobs.get(&job_id) {
+                let timeout_secs = policy.timeout_secs();
+                context.events.publish(adapter_event_with_source(
+                    &running,
+                    LogSource::System,
+                    LogChannel::System,
+                    LogLevel::Warn,
+                    format!("action timed out after {timeout_secs}s"),
+                ));
+                context.events.publish(adapter_event_with_source(
+                    &running,
+                    LogSource::System,
+                    LogChannel::System,
+                    LogLevel::Info,
+                    policy.teardown_note,
+                ));
+                crate::services::job_runtime::fail_job(
+                    &context.jobs,
+                    &context.events,
+                    &context.artifacts,
+                    &running,
+                    format!("action timed out after {timeout_secs}s"),
+                );
+            }
+
+            if let Err(error) = context.events.flush_job(&job_id)
+                && let Some(failed) = context.jobs.update_status(&job_id, JobStatus::Failed)
+            {
+                let _ = context.artifacts.update_job(&failed);
+                context.events.publish(adapter_event_with_source(
+                    &failed,
+                    LogSource::System,
+                    LogChannel::System,
+                    LogLevel::Error,
+                    error.to_string(),
+                ));
             }
 
             if has_exclusive_lock {
@@ -204,6 +215,13 @@ impl JobManager {
             release_device_lock(&self.device_locks, &job.device_id, job_id);
         }
 
+        let mut cancelled_event_job = job.clone();
+        cancelled_event_job.status = JobStatus::Cancelled;
+        self.events
+            .publish(job_event(&cancelled_event_job, "job cancelled"));
+        self.events
+            .flush_job(job_id)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
         let job = self
             .jobs
             .update_status(job_id, JobStatus::Cancelled)
@@ -211,7 +229,6 @@ impl JobManager {
         self.artifacts
             .update_job(&job)
             .map_err(|error| AppError::Internal(error.to_string()))?;
-        self.events.publish(job_event(&job, "job cancelled"));
         Ok(job)
     }
 

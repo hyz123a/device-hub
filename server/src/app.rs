@@ -14,7 +14,10 @@ use crate::{
     config::AppConfig,
     events::EventBus,
     frontend::{self, FrontendAssets},
-    ports::{DynHostDiscovery, HostDiscoveryPort},
+    ports::{
+        DynEventPersistence, DynHostDiscovery, DynJobEvidenceStore, HostDiscoveryPort,
+        JobEvidenceStorePort,
+    },
     services::{
         adapter_action_runner::AdapterActionRunner,
         adapter_host_discovery::AdapterHostDiscovery,
@@ -22,16 +25,16 @@ use crate::{
         job_manager::{JobManager, JobPolicyProvider},
     },
     storage::{
-        artifact_store::ArtifactStore, device_registry::DeviceRegistry, job_store::JobStore,
+        artifact_store::ArtifactStore, buffered_event_writer::BufferedEventWriter,
+        device_registry::DeviceRegistry, job_store::JobStore,
     },
-    use_cases::AppUseCases,
+    use_cases::{AppUseCaseDependencies, AppUseCases},
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub use_cases: AppUseCases,
     pub events: EventBus,
-    pub artifacts: ArtifactStore,
     pub frontend: FrontendAssets,
 }
 
@@ -62,6 +65,7 @@ pub async fn build_router_with_job_policy_and_board_profiles(
         SerialAdapter::new(),
         None,
         board_profiles,
+        None,
     )
     .await
 }
@@ -80,7 +84,15 @@ pub async fn build_router_with_job_policy_and_serial_stream_opener(
     let serial_adapter = SerialAdapter::with_stream_opener(max_message_bytes, move |config| {
         opener(config).map_err(device_hub_adapter_serial::SerialAdapterError::Io)
     });
-    build_router_with_components(config, policy_provider, serial_adapter, None, Vec::new()).await
+    build_router_with_components(
+        config,
+        policy_provider,
+        serial_adapter,
+        None,
+        Vec::new(),
+        None,
+    )
+    .await
 }
 
 pub async fn build_router_with_job_policy_and_host_discovery(
@@ -94,6 +106,23 @@ pub async fn build_router_with_job_policy_and_host_discovery(
         SerialAdapter::new(),
         Some(Arc::new(host_discovery)),
         Vec::new(),
+        None,
+    )
+    .await
+}
+
+pub async fn build_router_with_job_policy_and_evidence_store(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+    evidence_store: impl JobEvidenceStorePort + 'static,
+) -> Router {
+    build_router_with_components(
+        config,
+        policy_provider,
+        SerialAdapter::new(),
+        None,
+        Vec::new(),
+        Some(Arc::new(evidence_store)),
     )
     .await
 }
@@ -104,6 +133,7 @@ async fn build_router_with_components(
     serial_adapter: SerialAdapter,
     host_discovery: Option<DynHostDiscovery>,
     board_profiles: Vec<device_hub_shared::BoardProfile>,
+    evidence_store: Option<DynJobEvidenceStore>,
 ) -> Router {
     let AppConfig {
         devices: configured_devices,
@@ -113,8 +143,13 @@ async fn build_router_with_components(
         adb_program,
         artifacts_dir,
     } = config;
-    let artifacts = ArtifactStore::new(artifacts_dir.unwrap_or_else(|| ".artifacts".into()));
-    let events = EventBus::new(5_000, Some(artifacts.clone()));
+    let artifacts_root = PathBuf::from(artifacts_dir.unwrap_or_else(|| ".artifacts".into()));
+    let artifacts = ArtifactStore::new(&artifacts_root);
+    let event_persistence: DynEventPersistence = Arc::new(
+        BufferedEventWriter::start(&artifacts_root, 4_096)
+            .expect("failed to start buffered artifact writer"),
+    );
+    let events = EventBus::new(5_000, Some(event_persistence));
     let devices = Arc::new(
         DeviceRegistry::new(configured_devices, device_registry_path.map(PathBuf::from))
             .expect("failed to initialize device registry"),
@@ -158,18 +193,20 @@ async fn build_router_with_components(
     );
     let use_cases = AppUseCases::new(
         board_profiles,
-        devices.clone(),
-        host_discovery,
-        jobs.clone(),
-        job_manager.clone(),
-        events.clone(),
-        serial_command_executor,
+        AppUseCaseDependencies {
+            devices: devices.clone(),
+            host_discovery,
+            jobs: jobs.clone(),
+            job_manager: job_manager.clone(),
+            events: events.clone(),
+            evidence_store: evidence_store.unwrap_or_else(|| Arc::new(artifacts.clone())),
+            serial_command_executor,
+        },
     );
 
     let state = AppState {
         use_cases,
         events,
-        artifacts,
         frontend,
     };
 

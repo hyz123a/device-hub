@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::rc::Rc;
 
 use device_hub_shared::{LogChannel, LogEvent, LogLevel, LogSource};
 use gloo_timers::callback::Timeout;
@@ -9,12 +9,14 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::components::{
-    log_event::LogEventCard, serial_write_panel::SerialWritePanel, xterm_terminal::XtermTerminal,
+    bounded_event_buffer::BoundedEventBuffer,
+    log_event::LogEventCard,
+    serial_write_panel::SerialWritePanel,
+    xterm_terminal::{TerminalBatch, XtermTerminal},
 };
 
 const EVENT_PAGE_SIZE: usize = 50;
 const DEFAULT_BUFFERED_EVENTS: usize = 100_000;
-const MAX_BUFFERED_EVENTS: usize = 1_000_000;
 const BUFFERED_EVENT_LIMIT_OPTIONS: [usize; 4] = [100_000, 200_000, 500_000, 1_000_000];
 const RENDER_FLUSH_DELAY_MS: u32 = 32;
 
@@ -85,14 +87,21 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     let events = use_state(Vec::<LogEvent>::new);
     let buffered_event_limit = use_state(|| DEFAULT_BUFFERED_EVENTS);
     let current_page = use_state(|| 0_usize);
-    let event_store = use_mut_ref(Vec::<LogEvent>::new);
-    let dedup_set = use_mut_ref(HashSet::<u64>::new);
+    let event_store = use_mut_ref(|| BoundedEventBuffer::new(DEFAULT_BUFFERED_EVENTS));
+    let pending_terminal_events = use_mut_ref(Vec::<LogEvent>::new);
+    let terminal_batch_sequence = use_mut_ref(|| 0_u64);
+    let terminal_batch = use_state(TerminalBatch::default);
+    let terminal_snapshot = use_state(|| Rc::new(Vec::<LogEvent>::new()));
+    let terminal_reset_revision = use_state(|| 0_u64);
+    let buffered_event_count = use_state(|| 0_usize);
+    let available_sources = use_state(Vec::<LogSource>::new);
     let pending_render = use_mut_ref(|| Option::<Timeout>::None);
     let search_query = use_state(String::new);
     let debounced_search_query = use_state(String::new);
     let pending_search_sync = use_mut_ref(|| Option::<Timeout>::None);
     let internal_connection = use_state(|| "connecting".to_owned());
     let view_mode = use_state(|| LogViewMode::Stream);
+    let view_mode_ref = use_mut_ref(|| LogViewMode::Stream);
     let stream_filter = use_state(|| StreamFilter::DeviceLogs);
     let scroll_to_bottom_revision = use_state(|| 0_u32);
     let stream_at_bottom = use_state(|| true);
@@ -109,7 +118,13 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     {
         let events = events.clone();
         let event_store = event_store.clone();
-        let dedup_set = dedup_set.clone();
+        let pending_terminal_events = pending_terminal_events.clone();
+        let terminal_snapshot = terminal_snapshot.clone();
+        let terminal_reset_revision = terminal_reset_revision.clone();
+        let buffered_event_count = buffered_event_count.clone();
+        let available_sources = available_sources.clone();
+        let stream_filter = (*stream_filter).clone();
+        let search_query = (*debounced_search_query).clone();
         let buffered_event_limit = buffered_event_limit.clone();
         let initial_events = props.initial_events.clone();
         let current_page = current_page.clone();
@@ -117,20 +132,32 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         let connect_revision = props.connect_revision;
         use_effect_with((connect_revision, initial_events.len()), move |_| {
             let mut store = event_store.borrow_mut();
-            let mut set = dedup_set.borrow_mut();
             store.clear();
-            set.clear();
+            pending_terminal_events.borrow_mut().clear();
+            store.set_capacity(*buffered_event_limit);
             pending_render.borrow_mut().take();
-            for event in &initial_events {
-                let hash = event_identity_hash(event);
-                if set.insert(hash) {
-                    store.push(event.clone());
-                }
+            let mut initial_events = initial_events.clone();
+            initial_events.sort_by_key(|event| event.ts);
+            for event in initial_events {
+                store.push(event);
             }
-            store.sort_by(|a, b| a.ts.cmp(&b.ts));
-            trim_buffered_events(&mut store, MAX_BUFFERED_EVENTS);
-            let visible = visible_buffered_events(&store, *buffered_event_limit);
-            events.set(visible);
+            let snapshot = store.snapshot();
+            events.set(snapshot.clone());
+            terminal_snapshot.set(Rc::new(
+                snapshot
+                    .into_iter()
+                    .filter(|event| {
+                        matches_stream_filter(event, &stream_filter)
+                            && matches_search_query(
+                                event,
+                                search_query.trim().to_ascii_lowercase().as_str(),
+                            )
+                    })
+                    .collect(),
+            ));
+            terminal_reset_revision.set(terminal_reset_revision.wrapping_add(1));
+            buffered_event_count.set(store.len());
+            available_sources.set(store.available_device_sources());
             current_page.set(0);
             || {}
         });
@@ -169,15 +196,51 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         },
     );
 
+    // A stream identity change is the only steady-state path that rebuilds a
+    // terminal snapshot. Normal websocket flushes append batches instead.
+    {
+        let event_store = event_store.clone();
+        let terminal_snapshot = terminal_snapshot.clone();
+        let terminal_reset_revision = terminal_reset_revision.clone();
+        let stream_filter_value = (*stream_filter).clone();
+        let search_query_value = debounced_search_query.trim().to_ascii_lowercase();
+        let connect_revision = props.connect_revision;
+        use_effect_with(
+            (
+                connect_revision,
+                stream_filter_value.clone(),
+                search_query_value.clone(),
+            ),
+            move |_| {
+                let snapshot = event_store
+                    .borrow()
+                    .snapshot()
+                    .into_iter()
+                    .filter(|event| {
+                        matches_stream_filter(event, &stream_filter_value)
+                            && matches_search_query(event, &search_query_value)
+                    })
+                    .collect();
+                terminal_snapshot.set(Rc::new(snapshot));
+                terminal_reset_revision.set(terminal_reset_revision.wrapping_add(1));
+                || {}
+            },
+        );
+    }
+
     // WebSocket lifecycle
     {
         let events = events.clone();
         let event_store = event_store.clone();
-        let dedup_set = dedup_set.clone();
+        let pending_terminal_events = pending_terminal_events.clone();
+        let terminal_batch_sequence = terminal_batch_sequence.clone();
+        let terminal_batch = terminal_batch.clone();
+        let buffered_event_count = buffered_event_count.clone();
+        let available_sources = available_sources.clone();
+        let view_mode_ref = view_mode_ref.clone();
         let internal_connection = internal_connection.clone();
         let on_connection_change = props.on_connection_change.clone();
         let on_error_cb = props.on_error.clone();
-        let buffered_event_limit = buffered_event_limit.clone();
         let pending_render = pending_render.clone();
         let socket = socket.clone();
         let ws_url = (*effective_ws_url).clone();
@@ -217,35 +280,62 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
 
                         let message_events = events.clone();
                         let message_store = event_store.clone();
-                        let message_dedup = dedup_set.clone();
+                        let message_pending_terminal_events = pending_terminal_events.clone();
+                        let message_terminal_batch_sequence = terminal_batch_sequence.clone();
+                        let message_terminal_batch = terminal_batch.clone();
+                        let message_buffered_event_count = buffered_event_count.clone();
+                        let message_available_sources = available_sources.clone();
+                        let message_view_mode = view_mode_ref.clone();
                         let message_error = on_error_cb.clone();
-                        let buffered_event_limit = buffered_event_limit.clone();
                         let pending_render = pending_render.clone();
                         let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
                             if let Some(text) = event.data().as_string() {
                                 match serde_json::from_str::<LogEvent>(&text) {
                                     Ok(log_event) => {
-                                        let hash = event_identity_hash(&log_event);
-                                        if !message_dedup.borrow_mut().insert(hash) {
+                                        if !message_store.borrow_mut().push(log_event.clone()) {
                                             return;
                                         }
-                                        let mut next = message_store.borrow_mut();
-                                        next.push(log_event);
-                                        trim_buffered_events(&mut next, MAX_BUFFERED_EVENTS);
+                                        message_pending_terminal_events
+                                            .borrow_mut()
+                                            .push(log_event);
                                         if pending_render.borrow().is_none() {
                                             let message_events = message_events.clone();
                                             let message_store = message_store.clone();
-                                            let buffered_event_limit = buffered_event_limit.clone();
+                                            let pending_terminal_events =
+                                                message_pending_terminal_events.clone();
+                                            let terminal_batch_sequence =
+                                                message_terminal_batch_sequence.clone();
+                                            let terminal_batch = message_terminal_batch.clone();
+                                            let buffered_event_count =
+                                                message_buffered_event_count.clone();
+                                            let available_sources =
+                                                message_available_sources.clone();
+                                            let view_mode = message_view_mode.clone();
                                             let pending_render_for_timer = pending_render.clone();
                                             let pending_render_for_callback =
                                                 pending_render.clone();
                                             *pending_render_for_timer.borrow_mut() = Some(
                                                 Timeout::new(RENDER_FLUSH_DELAY_MS, move || {
-                                                    let snapshot = visible_buffered_events(
-                                                        message_store.borrow().as_slice(),
-                                                        *buffered_event_limit,
+                                                    let store = message_store.borrow();
+                                                    buffered_event_count.set(store.len());
+                                                    available_sources
+                                                        .set(store.available_device_sources());
+                                                    if *view_mode.borrow() == LogViewMode::Event {
+                                                        message_events.set(store.snapshot());
+                                                    }
+                                                    drop(store);
+                                                    let batch = std::mem::take(
+                                                        &mut *pending_terminal_events.borrow_mut(),
                                                     );
-                                                    message_events.set(snapshot);
+                                                    if !batch.is_empty() {
+                                                        let mut sequence =
+                                                            terminal_batch_sequence.borrow_mut();
+                                                        *sequence = sequence.wrapping_add(1);
+                                                        terminal_batch.set(TerminalBatch {
+                                                            sequence: *sequence,
+                                                            events: batch,
+                                                        });
+                                                    }
                                                     pending_render_for_callback.borrow_mut().take();
                                                 }),
                                             );
@@ -300,8 +390,10 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
 
             let socket = socket.clone();
             let pending_render = pending_render.clone();
+            let pending_terminal_events = pending_terminal_events.clone();
             move || {
                 pending_render.borrow_mut().take();
+                pending_terminal_events.borrow_mut().clear();
                 if let Some(existing) = socket.borrow_mut().take() {
                     let _ = existing.socket.close();
                 }
@@ -314,10 +406,17 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         let events = events.clone();
         let current_page = current_page.clone();
         let event_store = event_store.clone();
+        let buffered_event_count = buffered_event_count.clone();
+        let available_sources = available_sources.clone();
+        let view_mode_ref = view_mode_ref.clone();
         use_effect_with(*buffered_event_limit, move |buffered_event_limit| {
-            let next =
-                visible_buffered_events(event_store.borrow().as_slice(), *buffered_event_limit);
-            events.set(next);
+            let mut store = event_store.borrow_mut();
+            store.set_capacity(*buffered_event_limit);
+            buffered_event_count.set(store.len());
+            available_sources.set(store.available_device_sources());
+            if *view_mode_ref.borrow() == LogViewMode::Event {
+                events.set(store.snapshot());
+            }
             current_page.set(0);
             || {}
         });
@@ -345,25 +444,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     let start_index = end_index.saturating_sub(EVENT_PAGE_SIZE);
     let shown_events = end_index.saturating_sub(start_index);
     let visible_events = matched_events[start_index..end_index].to_vec();
-
-    let filtered_stream_events = use_memo(
-        (
-            events.clone(),
-            (*stream_filter).clone(),
-            search_query_value.clone(),
-        ),
-        |(events, filter, query)| {
-            events
-                .iter()
-                .filter(|e| matches_stream_filter(e, filter) && matches_search_query(e, query))
-                .cloned()
-                .collect::<Vec<_>>()
-        },
-    );
-    let filtered_stream_events = &*filtered_stream_events;
-
-    let available_sources = use_memo(events.clone(), |events| available_device_sources(events));
-    let available_sources = &*available_sources;
 
     let show_serial_write_panel = *view_mode == LogViewMode::Stream
         && matches!(&*stream_filter, StreamFilter::Source(LogSource::Serial))
@@ -400,11 +480,22 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     };
     let on_show_event_view = {
         let view_mode = view_mode.clone();
-        Callback::from(move |_| view_mode.set(LogViewMode::Event))
+        let view_mode_ref = view_mode_ref.clone();
+        let event_store = event_store.clone();
+        let events = events.clone();
+        Callback::from(move |_| {
+            *view_mode_ref.borrow_mut() = LogViewMode::Event;
+            events.set(event_store.borrow().snapshot());
+            view_mode.set(LogViewMode::Event);
+        })
     };
     let on_show_stream_view = {
         let view_mode = view_mode.clone();
-        Callback::from(move |_| view_mode.set(LogViewMode::Stream))
+        let view_mode_ref = view_mode_ref.clone();
+        Callback::from(move |_| {
+            *view_mode_ref.borrow_mut() = LogViewMode::Stream;
+            view_mode.set(LogViewMode::Stream);
+        })
     };
 
     let on_filter_all = {
@@ -430,9 +521,11 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     let on_clear_cache = {
         let events = events.clone();
         let event_store = event_store.clone();
-        let dedup_set = dedup_set.clone();
         let current_page = current_page.clone();
         let pending_render = pending_render.clone();
+        let buffered_event_count = buffered_event_count.clone();
+        let available_sources = available_sources.clone();
+        let terminal_snapshot = terminal_snapshot.clone();
         let clear_cache_status = clear_cache_status.clone();
         let clear_cache_pending = clear_cache_pending.clone();
         Callback::from(move |_| {
@@ -442,9 +535,11 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
             clear_cache_pending.set(true);
             let events = events.clone();
             let event_store = event_store.clone();
-            let dedup_set = dedup_set.clone();
             let current_page = current_page.clone();
             let pending_render = pending_render.clone();
+            let buffered_event_count = buffered_event_count.clone();
+            let available_sources = available_sources.clone();
+            let terminal_snapshot = terminal_snapshot.clone();
             let clear_cache_status = clear_cache_status.clone();
             let clear_cache_pending = clear_cache_pending.clone();
             spawn_local(async move {
@@ -452,8 +547,10 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                     Ok(result) => {
                         pending_render.borrow_mut().take();
                         event_store.borrow_mut().clear();
-                        dedup_set.borrow_mut().clear();
                         events.set(Vec::new());
+                        terminal_snapshot.set(Rc::new(Vec::new()));
+                        buffered_event_count.set(0);
+                        available_sources.set(Vec::new());
                         current_page.set(0);
                         clear_cache_status.set(Some(format!(
                             "Cleared {} cached events",
@@ -527,9 +624,13 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                     <span class={status_class}>{connection.clone()}</span>
                 </div>
                 <span class="font-mono text-sm text-ink-muted">{
-                    format!("{} matched / {} buffered · page {} / {} · showing {} of {}",
-                        matched_events.len(), events.len(),
-                        page + 1, total_pages, shown_events, total_events)
+                    if *view_mode == LogViewMode::Event {
+                        format!("{} matched / {} buffered · page {} / {} · showing {} of {}",
+                            matched_events.len(), events.len(),
+                            page + 1, total_pages, shown_events, total_events)
+                    } else {
+                        format!("{} buffered", *buffered_event_count)
+                    }
                 }</span>
             </div>
             <div class="mb-5 mt-4 flex flex-wrap items-center justify-between gap-3">
@@ -541,10 +642,10 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                                     <button class={filter_button_class(*stream_filter == StreamFilter::All)} onclick={on_filter_all}>{"All"}</button>
                                     <button class={filter_button_class(*stream_filter == StreamFilter::DeviceLogs)} onclick={on_filter_device_logs}>{"Device logs"}</button>
                                     {
-                                        for available_sources.iter().cloned().map(|source| {
+                                        for available_sources.iter().map(|source| {
                                             let sf = stream_filter.clone();
                                             let active = *sf == StreamFilter::Source(source.clone());
-                                            let label = format_source_label(&source);
+                                            let label = format_source_label(source);
                                             let src = source.clone();
                                             let onclick = Callback::from(move |_| sf.set(StreamFilter::Source(src.clone())));
                                             html! { <button class={filter_button_class(active)} {onclick}>{label}</button> }
@@ -560,11 +661,11 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                 </div>
                 <div class="flex flex-wrap items-center gap-2.5">
                     {
-                        if props.show_clear_cache {
+                        if props.show_clear_cache && *view_mode == LogViewMode::Event {
                             html! {
                                 <button
                                     class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 font-medium text-red-800 transition hover:bg-red-100 disabled:cursor-default disabled:opacity-55"
-                                    onclick={on_clear_cache}
+                                    onclick={on_clear_cache.clone()}
                                     disabled={*clear_cache_pending}
                                 >{if *clear_cache_pending { "Clearing..." } else { "Clear cache" }}</button>
                             }
@@ -583,7 +684,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                         } else {
                             html! {
                                 <>
-                                    <span class="font-mono text-sm text-ink-muted">{format!("{} streamed events", filtered_stream_events.len())}</span>
                                     if !*stream_at_bottom {
                                         <button
                                             class="rounded-2xl bg-gradient-to-br from-accent to-accent-strong px-4 py-3 font-medium text-white transition hover:opacity-95"
@@ -605,7 +705,7 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
             }
             <div class="min-w-0 grid gap-4">
                 {
-                    if events.is_empty() {
+                    if *buffered_event_count == 0 {
                         html! { <p class="m-0 text-ink-muted">{"Waiting for events..."}</p> }
                     } else if *view_mode == LogViewMode::Event {
                         html! {
@@ -615,20 +715,20 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
                                 .cloned()
                                 .map(|event| html! { <LogEventCard event={event} /> })
                         }
-                    } else if filtered_stream_events.is_empty() {
+                    } else if terminal_snapshot.is_empty() && terminal_batch.events.is_empty() {
                         html! { <p class="m-0 text-ink-muted">{"No logs match the current stream filter."}</p> }
                     } else {
                         html! {
-                            {view_stream_terminal(
-                                filtered_stream_events.as_slice(),
-                                format!(
-                                    "{}|{}",
-                                    stream_filter_key(&stream_filter),
-                                    search_query_value
-                                ),
-                                *scroll_to_bottom_revision,
-                                on_bottom_state_change.clone(),
-                            )}
+                            {view_stream_terminal(StreamTerminalView {
+                                snapshot: (*terminal_snapshot).clone(),
+                                buffered_event_count: *buffered_event_count,
+                                terminal_batch: (*terminal_batch).clone(),
+                                reset_key: terminal_reset_revision.to_string(),
+                                scroll_to_bottom_revision: *scroll_to_bottom_revision,
+                                on_bottom_state_change: on_bottom_state_change.clone(),
+                                on_clear_cache: props.show_clear_cache.then_some(on_clear_cache.clone()),
+                                clear_cache_pending: *clear_cache_pending,
+                            })}
                         }
                     }
                 }
@@ -644,23 +744,6 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
             }
         </article>
     }
-}
-
-// ---------------------------------------------------------------------------
-// Identity hash for O(1) dedup
-// ---------------------------------------------------------------------------
-
-fn event_identity_hash(event: &LogEvent) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    event.ts.hash(&mut hasher);
-    event.device_id.hash(&mut hasher);
-    event.job_id.hash(&mut hasher);
-    event.message.hash(&mut hasher);
-    std::mem::discriminant(&event.source).hash(&mut hasher);
-    std::mem::discriminant(&event.channel).hash(&mut hasher);
-    std::mem::discriminant(&event.level).hash(&mut hasher);
-    hasher.finish()
 }
 
 // ---------------------------------------------------------------------------
@@ -695,18 +778,6 @@ pub(crate) fn matches_search_query(event: &LogEvent, query: &str) -> bool {
     .any(|v| v.to_ascii_lowercase().contains(query))
 }
 
-pub(crate) fn trim_buffered_events(events: &mut Vec<LogEvent>, max_events: usize) {
-    if events.len() > max_events {
-        let drain = events.len() - max_events;
-        events.drain(0..drain);
-    }
-}
-
-fn visible_buffered_events(events: &[LogEvent], max_events: usize) -> Vec<LogEvent> {
-    let start = events.len().saturating_sub(max_events);
-    events[start..].to_vec()
-}
-
 fn matches_stream_filter(event: &LogEvent, filter: &StreamFilter) -> bool {
     let is_structured = matches!(event.source, LogSource::System | LogSource::Job)
         || matches!(event.channel, LogChannel::System);
@@ -716,18 +787,6 @@ fn matches_stream_filter(event: &LogEvent, filter: &StreamFilter) -> bool {
         StreamFilter::Structured => is_structured,
         StreamFilter::Source(source) => event.source == *source && !is_structured,
     }
-}
-
-fn available_device_sources(events: &[LogEvent]) -> Vec<LogSource> {
-    [
-        LogSource::Serial,
-        LogSource::Ssh,
-        LogSource::Jlink,
-        LogSource::Adb,
-    ]
-    .into_iter()
-    .filter(|source| events.iter().any(|e| e.source == *source))
-    .collect()
 }
 
 pub(crate) fn format_source_label(source: &LogSource) -> &'static str {
@@ -741,35 +800,56 @@ pub(crate) fn format_source_label(source: &LogSource) -> &'static str {
     }
 }
 
-fn stream_filter_key(filter: &StreamFilter) -> String {
-    match filter {
-        StreamFilter::All => "all".into(),
-        StreamFilter::DeviceLogs => "device-logs".into(),
-        StreamFilter::Structured => "structured".into(),
-        StreamFilter::Source(source) => format!("source:{}", format_source_label(source)),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Stream terminal view
 // ---------------------------------------------------------------------------
 
-fn view_stream_terminal(
-    stream_events: &[LogEvent],
+struct StreamTerminalView {
+    snapshot: Rc<Vec<LogEvent>>,
+    buffered_event_count: usize,
+    terminal_batch: TerminalBatch,
     reset_key: String,
     scroll_to_bottom_revision: u32,
     on_bottom_state_change: Callback<bool>,
-) -> Html {
+    on_clear_cache: Option<Callback<MouseEvent>>,
+    clear_cache_pending: bool,
+}
+
+fn view_stream_terminal(props: StreamTerminalView) -> Html {
+    let StreamTerminalView {
+        snapshot,
+        buffered_event_count,
+        terminal_batch,
+        reset_key,
+        scroll_to_bottom_revision,
+        on_bottom_state_change,
+        on_clear_cache,
+        clear_cache_pending,
+    } = props;
     html! {
         <div class="overflow-hidden rounded-[20px] dh-surface shadow-inner">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-white/5 px-4 py-3">
                 <div class="flex flex-wrap items-center gap-2">
                     <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-100">{"stream"}</span>
-                    <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-300">{format!("{} events", stream_events.len())}</span>
+                    <span class="inline-flex rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-300">{format!("{} events", buffered_event_count)}</span>
                 </div>
+                {
+                    if let Some(on_clear_cache) = on_clear_cache {
+                        html! {
+                            <button
+                                class="rounded-full border border-white/10 bg-white/10 px-3 py-1.5 text-xs font-medium text-slate-100 transition hover:bg-white/15 disabled:cursor-default disabled:opacity-55"
+                                onclick={on_clear_cache}
+                                disabled={clear_cache_pending}
+                            >{if clear_cache_pending { "Clearing..." } else { "Clear cache" }}</button>
+                        }
+                    } else {
+                        Html::default()
+                    }
+                }
             </div>
             <XtermTerminal
-                events={stream_events.to_vec()}
+                snapshot={snapshot}
+                batch={terminal_batch}
                 {reset_key}
                 {scroll_to_bottom_revision}
                 {on_bottom_state_change}
@@ -857,47 +937,6 @@ fn filter_button_class(active: bool) -> Classes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
-
-    fn sample_event(index: usize, message: impl Into<String>) -> LogEvent {
-        LogEvent {
-            ts: chrono::Utc
-                .timestamp_opt(index as i64, 0)
-                .single()
-                .expect("valid timestamp"),
-            device_id: "board-alpha".into(),
-            job_id: "job-1".into(),
-            source: LogSource::Serial,
-            channel: LogChannel::Stdout,
-            level: LogLevel::Info,
-            message: message.into(),
-        }
-    }
-
-    #[test]
-    fn trims_large_event_buffers_without_dropping_latest_logs() {
-        let mut events = (0..6)
-            .map(|i| sample_event(i, format!("line {i}")))
-            .collect::<Vec<_>>();
-        trim_buffered_events(&mut events, 3);
-        assert_eq!(events.len(), 3);
-        assert_eq!(events[0].message, "line 3");
-        assert_eq!(events[2].message, "line 5");
-    }
-
-    #[test]
-    fn visible_buffered_events_preserve_retained_history_when_cap_changes() {
-        let mut retained = (0..6)
-            .map(|i| sample_event(i, format!("line {i}")))
-            .collect::<Vec<_>>();
-        trim_buffered_events(&mut retained, 5);
-        let visible = visible_buffered_events(&retained, 3);
-        assert_eq!(retained.len(), 5);
-        assert_eq!(retained[0].message, "line 1");
-        assert_eq!(visible.len(), 3);
-        assert_eq!(visible[0].message, "line 3");
-        assert_eq!(visible[2].message, "line 5");
-    }
 
     #[test]
     fn append_stream_ws_query_adds_source_and_search_filters() {
@@ -921,19 +960,5 @@ mod tests {
                 .expect("ws url");
 
         assert_eq!(url, "ws://localhost/api/ws");
-    }
-
-    #[test]
-    fn event_identity_hash_is_stable_for_same_event() {
-        let a = sample_event(0, "hello");
-        let b = sample_event(0, "hello");
-        assert_eq!(event_identity_hash(&a), event_identity_hash(&b));
-    }
-
-    #[test]
-    fn event_identity_hash_differs_for_different_messages() {
-        let a = sample_event(0, "hello");
-        let b = sample_event(0, "world");
-        assert_ne!(event_identity_hash(&a), event_identity_hash(&b));
     }
 }

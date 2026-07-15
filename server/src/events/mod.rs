@@ -6,31 +6,39 @@ use std::{
 use device_hub_shared::{EventFilter, LogEvent};
 use tokio::sync::broadcast;
 
-use crate::storage::artifact_store::ArtifactStore;
+use crate::ports::{DynEventPersistence, EventPersistenceError};
 
 #[derive(Clone)]
 pub struct EventBus {
     sender: broadcast::Sender<LogEvent>,
     buffer: Arc<Mutex<VecDeque<LogEvent>>>,
     capacity: usize,
-    artifacts: Option<ArtifactStore>,
+    persistence: Option<DynEventPersistence>,
+    persistence_error: Arc<Mutex<Option<EventPersistenceError>>>,
 }
 
 impl EventBus {
-    pub fn new(capacity: usize, artifacts: Option<ArtifactStore>) -> Self {
+    pub fn new(capacity: usize, persistence: Option<DynEventPersistence>) -> Self {
         let (sender, _) = broadcast::channel(capacity);
         Self {
             sender,
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
             capacity,
-            artifacts,
+            persistence,
+            persistence_error: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn publish(&self, event: LogEvent) {
-        if let Some(artifacts) = &self.artifacts {
-            if let Err(error) = artifacts.append_event(&event) {
-                eprintln!("failed to persist event for {}: {error}", event.job_id);
+        if let Some(persistence) = &self.persistence
+            && let Err(error) = persistence.append_event(event.clone())
+        {
+            let mut persistence_error = self
+                .persistence_error
+                .lock()
+                .expect("event persistence error state poisoned");
+            if persistence_error.is_none() {
+                *persistence_error = Some(error);
             }
         }
         {
@@ -61,5 +69,27 @@ impl EventBus {
         let cleared = buffer.len();
         buffer.clear();
         cleared
+    }
+
+    pub fn flush_job(&self, job_id: &str) -> Result<(), EventPersistenceError> {
+        if let Some(error) = self
+            .persistence_error
+            .lock()
+            .expect("event persistence error state poisoned")
+            .clone()
+        {
+            return Err(error);
+        }
+        if let Some(persistence) = &self.persistence {
+            persistence.flush_job(job_id)?;
+        }
+        Ok(())
+    }
+
+    pub fn shutdown_persistence(&self) -> Result<(), EventPersistenceError> {
+        if let Some(persistence) = &self.persistence {
+            persistence.shutdown()?;
+        }
+        Ok(())
     }
 }

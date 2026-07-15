@@ -189,15 +189,15 @@ impl SerialAdapter {
         let mut output = String::new();
         let mut read_buffer = [0_u8; DEFAULT_READ_CHUNK_BYTES];
         loop {
-            if let Some(marker) = request.until.as_deref().filter(|marker| !marker.is_empty()) {
-                if output.contains(marker) {
-                    return Ok(SerialExecResult {
-                        command: request.command.clone(),
-                        output,
-                        matched: Some(marker.to_owned()),
-                        timed_out: false,
-                    });
-                }
+            if let Some(marker) = request.until.as_deref().filter(|marker| !marker.is_empty())
+                && output.contains(marker)
+            {
+                return Ok(SerialExecResult {
+                    command: request.command.clone(),
+                    output,
+                    matched: Some(marker.to_owned()),
+                    timed_out: false,
+                });
             }
 
             let now = tokio::time::Instant::now();
@@ -362,15 +362,15 @@ impl SharedSerialSession {
 
         loop {
             let output = self.captured_since(start_offset);
-            if let Some(marker) = request.until.as_deref().filter(|marker| !marker.is_empty()) {
-                if output.contains(marker) {
-                    return Ok(SerialExecResult {
-                        command: request.command.clone(),
-                        output,
-                        matched: Some(marker.to_owned()),
-                        timed_out: false,
-                    });
-                }
+            if let Some(marker) = request.until.as_deref().filter(|marker| !marker.is_empty())
+                && output.contains(marker)
+            {
+                return Ok(SerialExecResult {
+                    command: request.command.clone(),
+                    output,
+                    matched: Some(marker.to_owned()),
+                    timed_out: false,
+                });
             }
 
             let now = tokio::time::Instant::now();

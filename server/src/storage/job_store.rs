@@ -39,7 +39,7 @@ impl JobStore {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        jobs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        jobs.sort_by_key(|job| std::cmp::Reverse(job.created_at));
         jobs
     }
 

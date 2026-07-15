@@ -1,16 +1,16 @@
 use device_hub_shared::{
     ActionRequest, ActionStartResponse, ActiveTailStatus, BoardProfile, Device, DeviceDetail,
-    DeviceRuntimeStatus, DiscoveredJlinkProbe, DiscoveredSerialPort, Job, JobStatus,
-    SerialExecRequest, SerialExecResult,
+    DeviceRuntimeStatus, DiscoveredJlinkProbe, DiscoveredSerialPort, EventFilter, Job, JobEvidence,
+    JobStatus, JobSummary, LogChannel, LogEvent, LogLevel, SerialExecRequest, SerialExecResult,
 };
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use crate::{
     error::AppError,
     events::EventBus,
     ports::{
-        DeviceRegistryError, DynDeviceRegistry, DynHostDiscovery, DynSerialCommandExecutor,
-        HostDiscoveryError, SerialCommandError,
+        DeviceRegistryError, DynDeviceRegistry, DynHostDiscovery, DynJobEvidenceStore,
+        DynSerialCommandExecutor, HostDiscoveryError, PersistedEventSummary, SerialCommandError,
     },
     services::job_manager::JobManager,
     storage::job_store::JobStore,
@@ -24,27 +24,31 @@ pub struct AppUseCases {
     jobs: JobStore,
     job_manager: JobManager,
     events: EventBus,
+    evidence_store: DynJobEvidenceStore,
     serial_command_executor: DynSerialCommandExecutor,
 }
 
+pub struct AppUseCaseDependencies {
+    pub devices: DynDeviceRegistry,
+    pub host_discovery: DynHostDiscovery,
+    pub jobs: JobStore,
+    pub job_manager: JobManager,
+    pub events: EventBus,
+    pub evidence_store: DynJobEvidenceStore,
+    pub serial_command_executor: DynSerialCommandExecutor,
+}
+
 impl AppUseCases {
-    pub fn new(
-        board_profiles: Vec<BoardProfile>,
-        devices: DynDeviceRegistry,
-        host_discovery: DynHostDiscovery,
-        jobs: JobStore,
-        job_manager: JobManager,
-        events: EventBus,
-        serial_command_executor: DynSerialCommandExecutor,
-    ) -> Self {
+    pub fn new(board_profiles: Vec<BoardProfile>, dependencies: AppUseCaseDependencies) -> Self {
         Self {
             board_profiles: Arc::new(board_profiles),
-            devices,
-            host_discovery,
-            jobs,
-            job_manager,
-            events,
-            serial_command_executor,
+            devices: dependencies.devices,
+            host_discovery: dependencies.host_discovery,
+            jobs: dependencies.jobs,
+            job_manager: dependencies.job_manager,
+            events: dependencies.events,
+            evidence_store: dependencies.evidence_store,
+            serial_command_executor: dependencies.serial_command_executor,
         }
     }
 
@@ -141,6 +145,90 @@ impl AppUseCases {
         self.jobs.get(job_id).ok_or(AppError::JobNotFound)
     }
 
+    pub fn get_job_events(
+        &self,
+        job_id: &str,
+        filter: &EventFilter,
+        tail: Option<usize>,
+    ) -> Result<Vec<LogEvent>, AppError> {
+        self.get_job(job_id)?;
+        self.events
+            .flush_job(job_id)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+
+        let persisted = if let Some(tail) = tail {
+            self.evidence_store.read_tail_events(job_id, tail, filter)
+        } else {
+            self.evidence_store.read_events(job_id)
+        }
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+
+        let events = persisted.unwrap_or_else(|| {
+            self.events.snapshot(&EventFilter {
+                job_id: Some(job_id.to_owned()),
+                ..EventFilter::default()
+            })
+        });
+        let filtered = events
+            .into_iter()
+            .filter(|event| filter.matches(event))
+            .collect::<Vec<_>>();
+        Ok(tail_events(filtered, tail))
+    }
+
+    pub fn get_job_evidence(&self, job_id: &str) -> Result<JobEvidence, AppError> {
+        const EVIDENCE_EVENT_SAMPLE_LIMIT: usize = 128;
+
+        let job = self.get_job(job_id)?;
+        self.events
+            .flush_job(job_id)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        let summary = if let Some(summary) = self
+            .evidence_store
+            .read_event_summary(job_id)
+            .map_err(|error| AppError::Internal(error.to_string()))?
+        {
+            summary
+        } else {
+            let events = self
+                .evidence_store
+                .read_tail_events(job_id, EVIDENCE_EVENT_SAMPLE_LIMIT, &EventFilter::default())
+                .map_err(|error| AppError::Internal(error.to_string()))?
+                .unwrap_or_else(|| {
+                    self.events.snapshot(&EventFilter {
+                        job_id: Some(job_id.to_owned()),
+                        ..EventFilter::default()
+                    })
+                });
+            summarize_events(&events)
+        };
+        let artifacts = self
+            .evidence_store
+            .list_job_artifacts(job_id)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        let device = self.get_device(&job.device_id).ok();
+
+        Ok(JobEvidence {
+            summary: build_job_summary(&job, device.as_ref(), &summary, &artifacts),
+            job,
+            artifacts,
+        })
+    }
+
+    pub fn get_job_artifact_path(
+        &self,
+        job_id: &str,
+        artifact_name: &str,
+    ) -> Result<PathBuf, AppError> {
+        self.get_job(job_id)?;
+        self.events
+            .flush_job(job_id)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        self.evidence_store
+            .artifact_path(job_id, artifact_name)
+            .ok_or(AppError::JobNotFound)
+    }
+
     pub async fn start_action(
         &self,
         device_id: &str,
@@ -151,13 +239,14 @@ impl AppUseCases {
         let device = self.get_device(device_id)?;
         validate_action(&action, &device)?;
         validate_payload(&action, &device, payload.as_ref())?;
-        if reuse && matches!(action.as_str(), "serial.tail" | "adb.logcat") {
-            if let Some(job) = find_active_job(&self.jobs, device_id, &action) {
-                return Ok(ActionStartResponse {
-                    job,
-                    already_running: true,
-                });
-            }
+        if reuse
+            && matches!(action.as_str(), "serial.tail" | "adb.logcat")
+            && let Some(job) = find_active_job(&self.jobs, device_id, &action)
+        {
+            return Ok(ActionStartResponse {
+                job,
+                already_running: true,
+            });
         }
 
         let job = self.job_manager.start(device, action, payload).await?;
@@ -205,6 +294,132 @@ impl AppUseCases {
 
         DeviceRuntimeStatus { active_tails }
     }
+}
+
+fn tail_events(events: Vec<LogEvent>, tail: Option<usize>) -> Vec<LogEvent> {
+    let Some(tail) = tail else {
+        return events;
+    };
+    let start = events.len().saturating_sub(tail);
+    events.into_iter().skip(start).collect()
+}
+
+fn build_job_summary(
+    job: &Job,
+    device: Option<&Device>,
+    event_summary: &PersistedEventSummary,
+    artifacts: &[device_hub_shared::JobArtifact],
+) -> JobSummary {
+    let stdout_lines = event_summary.stdout_events;
+    let stderr_lines = event_summary.stderr_events;
+    let system_events = event_summary.system_events;
+
+    let request = match job.action.as_str() {
+        "ssh.exec" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("command: {payload}")),
+        "ssh.tail" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("path: {payload}"))
+            .or_else(|| {
+                device.and_then(|device| {
+                    device
+                        .ssh
+                        .as_ref()
+                        .map(|ssh| format!("path: {}", ssh.default_log_path))
+                })
+            }),
+        "serial.tail" => device.and_then(|device| {
+            device
+                .serial
+                .as_ref()
+                .map(|serial| format!("serial: {} @ {} baud", serial.port, serial.baud))
+        }),
+        "adb.logcat" => device.and_then(|device| {
+            device
+                .adb
+                .as_ref()
+                .map(|adb| format!("adb: {} logcat", adb.serial))
+        }),
+        "serial.write" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("input: {}", payload.escape_debug())),
+        "serial.exec" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("command: {}", payload.escape_debug())),
+        "ssh.reboot" => device.and_then(|device| {
+            device
+                .ssh
+                .as_ref()
+                .map(|ssh| format!("target: {}@{}", ssh.user, ssh.host))
+        }),
+        "jlink.probe" | "jlink.verify" | "jlink.reset" | "jlink.erase" => device
+            .and_then(|device| device.jlink.as_ref())
+            .map(|jlink| format!("probe: {} on {}", jlink.serial, jlink.device)),
+        "jlink.flash" => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("firmware: {payload}")),
+        _ => job
+            .payload
+            .as_ref()
+            .map(|payload| format!("payload: {payload}")),
+    };
+
+    let mut highlights = vec![format!(
+        "captured {stdout_lines} stdout lines, {stderr_lines} stderr lines, and {system_events} system events"
+    )];
+    highlights.push(format!(
+        "persisted {} artifact files under the server artifact root",
+        artifacts.len()
+    ));
+    if matches!(job.status, JobStatus::Failed | JobStatus::Cancelled)
+        && let Some(last_error) = &event_summary.last_error
+    {
+        highlights.push(format!("last error: {last_error}"));
+    }
+
+    JobSummary {
+        headline: format!(
+            "{} {} on {}",
+            job.action,
+            match job.status {
+                JobStatus::Pending => "is pending",
+                JobStatus::Running => "is running",
+                JobStatus::Succeeded => "succeeded",
+                JobStatus::Failed => "failed",
+                JobStatus::Cancelled => "was cancelled",
+            },
+            job.device_id
+        ),
+        request,
+        outcome: event_summary.outcome.clone(),
+        highlights,
+    }
+}
+
+fn summarize_events(events: &[LogEvent]) -> PersistedEventSummary {
+    let mut summary = PersistedEventSummary::default();
+    for event in events {
+        match event.channel {
+            LogChannel::Stdout => summary.stdout_events += 1,
+            LogChannel::Stderr => summary.stderr_events += 1,
+            LogChannel::System => summary.system_events += 1,
+        }
+        if matches!(event.level, LogLevel::Error) {
+            summary.last_error = Some(event.message.clone());
+        }
+        if matches!(event.level, LogLevel::Error)
+            || event.source == device_hub_shared::LogSource::Job
+        {
+            summary.outcome = Some(event.message.clone());
+        }
+    }
+    summary
 }
 
 fn map_device_registry_error(error: DeviceRegistryError) -> AppError {

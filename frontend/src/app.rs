@@ -116,10 +116,10 @@ fn load_initial_theme() -> ThemeMode {
 
 fn apply_theme(theme: ThemeMode) {
     if let Some(window) = web_sys::window() {
-        if let Some(document) = window.document() {
-            if let Some(root) = document.document_element() {
-                let _ = root.set_attribute("data-theme", theme.as_str());
-            }
+        if let Some(document) = window.document()
+            && let Some(root) = document.document_element()
+        {
+            let _ = root.set_attribute("data-theme", theme.as_str());
         }
 
         if let Ok(Some(storage)) = window.local_storage() {
