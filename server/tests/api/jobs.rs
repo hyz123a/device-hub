@@ -1,24 +1,100 @@
-use std::{collections::VecDeque, fs, os::unix::fs::PermissionsExt, path::Path, sync::Arc};
+use std::{
+    collections::VecDeque,
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use chrono::SecondsFormat;
 use device_hub_server::{
     config::AppConfig,
+    ports::{JobEvidenceStoreError, JobEvidenceStorePort, PersistedEventSummary},
     services::job_manager::{ActionPolicy, JobPolicyProvider},
 };
 use device_hub_shared::{
-    ActionRequest, ActionStartResponse, AdbConfig, Device, DeviceDetail, JlinkConfig, Job,
-    JobEvidence, JobStatus, LogCacheClearResponse, SerialConfig, SerialExecRequest,
-    SerialExecResult, SshConfig,
+    ActionRequest, ActionStartResponse, AdbConfig, Device, DeviceDetail, EventFilter, JlinkConfig,
+    Job, JobArtifact, JobEvidence, JobStatus, LogCacheClearResponse, LogChannel, LogEvent,
+    LogLevel, LogSource, SerialConfig, SerialExecRequest, SerialExecResult, SshConfig,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_serial::SerialStream;
 
 use crate::helpers::{
-    connect_ws, recv_ws_event, spawn_app, spawn_app_with_config,
-    spawn_app_with_config_and_job_policy,
+    TestApp, connect_ws, recv_ws_event, spawn_app, spawn_app_with_config,
+    spawn_app_with_config_and_evidence_store, spawn_app_with_config_and_job_policy,
     spawn_app_with_config_job_policy_and_serial_stream_opener, wait_for_job_events,
 };
+
+#[derive(Clone, Default)]
+struct EvidenceStoreProbe {
+    full_reads: Arc<AtomicUsize>,
+    tail_reads: Arc<AtomicUsize>,
+    last_tail: Arc<AtomicUsize>,
+}
+
+impl EvidenceStoreProbe {
+    fn events(job_id: &str, count: usize) -> Vec<LogEvent> {
+        (0..count)
+            .map(|index| LogEvent {
+                ts: chrono::Utc::now(),
+                device_id: "board-alpha".into(),
+                job_id: job_id.into(),
+                source: LogSource::Serial,
+                channel: LogChannel::Stdout,
+                level: LogLevel::Info,
+                message: format!("probe-{index}"),
+            })
+            .collect()
+    }
+}
+
+impl JobEvidenceStorePort for EvidenceStoreProbe {
+    fn read_events(&self, job_id: &str) -> Result<Option<Vec<LogEvent>>, JobEvidenceStoreError> {
+        self.full_reads.fetch_add(1, Ordering::Relaxed);
+        Ok(Some(Self::events(job_id, 4)))
+    }
+
+    fn read_tail_events(
+        &self,
+        job_id: &str,
+        tail: usize,
+        _filter: &EventFilter,
+    ) -> Result<Option<Vec<LogEvent>>, JobEvidenceStoreError> {
+        self.tail_reads.fetch_add(1, Ordering::Relaxed);
+        self.last_tail.store(tail, Ordering::Relaxed);
+        Ok(Some(Self::events(job_id, tail)))
+    }
+
+    fn read_event_summary(
+        &self,
+        _job_id: &str,
+    ) -> Result<Option<PersistedEventSummary>, JobEvidenceStoreError> {
+        Ok(None)
+    }
+
+    fn list_job_artifacts(&self, _job_id: &str) -> Result<Vec<JobArtifact>, JobEvidenceStoreError> {
+        Ok(Vec::new())
+    }
+
+    fn artifact_path(&self, _job_id: &str, _artifact_name: &str) -> Option<PathBuf> {
+        None
+    }
+}
+
+async fn spawn_evidence_probe_app(dir: &Path, probe: EvidenceStoreProbe) -> TestApp {
+    let script = make_fake_ssh(dir, "printf 'real output\\n'\nexit 0");
+    let mut config = ssh_test_config(
+        script.display().to_string(),
+        dir.join("id_rsa").display().to_string(),
+    );
+    config.artifacts_dir = Some(dir.join("artifacts").display().to_string());
+    spawn_app_with_config_and_evidence_store(config, probe).await
+}
 
 fn make_fake_ssh(dir: &Path, body: &str) -> std::path::PathBuf {
     let script_path = dir.join("fake-ssh.sh");
@@ -29,6 +105,178 @@ fn make_fake_ssh(dir: &Path, body: &str) -> std::path::PathBuf {
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions).expect("chmod fake ssh");
     script_path
+}
+
+#[tokio::test]
+#[ignore = "repeatable large job-detail performance profile"]
+async fn large_job_detail_performance_profile() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let artifacts_dir = tempdir.path().join("artifacts");
+    let script = make_fake_ssh(
+        tempdir.path(),
+        "i=1
+while [ \"$i\" -le 20000 ]; do
+  printf 'profile-line-%s\\n' \"$i\"
+  i=$((i + 1))
+done
+exit 0",
+    );
+    let mut config = ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    );
+    config.artifacts_dir = Some(artifacts_dir.display().to_string());
+    let app = spawn_app_with_config(config).await;
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("profile large history".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("job json");
+    app.wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+
+    let detail_started = std::time::Instant::now();
+    let evidence_response = app.get_job_evidence(&created.id).await;
+    assert!(evidence_response.status().is_success());
+    let _: JobEvidence = evidence_response.json().await.expect("evidence json");
+    let tail_response = app
+        .api_client
+        .get(app.endpoint(&format!("/api/jobs/{}/events?tail=5000", created.id)))
+        .send()
+        .await
+        .expect("tail response");
+    let tail_events: Vec<device_hub_shared::LogEvent> =
+        tail_response.json().await.expect("tail json");
+    let detail_elapsed = detail_started.elapsed();
+    let artifact_bytes = fs::metadata(
+        artifacts_dir
+            .join("jobs")
+            .join(&created.id)
+            .join("events.ndjson"),
+    )
+    .expect("artifact metadata")
+    .len();
+    let rss_kib = fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("VmRSS:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<usize>()
+                    .ok()
+            })
+        })
+        .unwrap_or_default();
+
+    assert_eq!(tail_events.len(), 5_000);
+    eprintln!(
+        "artifact_bytes={artifact_bytes} evidence_plus_tail_ms={} tail_events={} rss_kib={rss_kib}",
+        detail_elapsed.as_millis(),
+        tail_events.len(),
+    );
+}
+
+#[tokio::test]
+async fn get_job_events_tail_uses_bounded_reader_port() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let probe = EvidenceStoreProbe::default();
+    let app = spawn_evidence_probe_app(tempdir.path(), probe.clone()).await;
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("tail through port".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("job json");
+    app.wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+
+    let response = app
+        .api_client
+        .get(app.endpoint(&format!("/api/jobs/{}/events?tail=3", created.id)))
+        .send()
+        .await
+        .expect("tail response");
+    let events: Vec<LogEvent> = response.json().await.expect("tail json");
+
+    assert_eq!(events.len(), 3);
+    assert_eq!(probe.tail_reads.load(Ordering::Relaxed), 1);
+    assert_eq!(probe.last_tail.load(Ordering::Relaxed), 3);
+    assert_eq!(probe.full_reads.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn get_job_events_without_tail_preserves_full_history_contract() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let probe = EvidenceStoreProbe::default();
+    let app = spawn_evidence_probe_app(tempdir.path(), probe.clone()).await;
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("full history through port".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("job json");
+    app.wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+
+    let events: Vec<LogEvent> = app
+        .get_job_events(&created.id)
+        .await
+        .json()
+        .await
+        .expect("events json");
+
+    assert_eq!(events.len(), 4);
+    assert_eq!(probe.full_reads.load(Ordering::Relaxed), 1);
+    assert_eq!(probe.tail_reads.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn job_evidence_uses_bounded_event_samples() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let probe = EvidenceStoreProbe::default();
+    let app = spawn_evidence_probe_app(tempdir.path(), probe.clone()).await;
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("bounded evidence fallback".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("job json");
+    app.wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+
+    let response = app.get_job_evidence(&created.id).await;
+    assert!(response.status().is_success());
+    let _: JobEvidence = response.json().await.expect("evidence json");
+
+    assert_eq!(probe.tail_reads.load(Ordering::Relaxed), 1);
+    assert_eq!(probe.last_tail.load(Ordering::Relaxed), 128);
+    assert_eq!(probe.full_reads.load(Ordering::Relaxed), 0);
 }
 
 fn make_fake_jlink(dir: &Path, body: &str) -> std::path::PathBuf {
@@ -1170,7 +1418,7 @@ async fn jlink_reset_times_out_and_persists_timeout_evidence() {
 }
 
 #[tokio::test]
-async fn ssh_tail_streams_events_until_cancelled() {
+async fn cancelled_job_keeps_all_events_accepted_before_cancellation() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let script = make_fake_ssh(
         tempdir.path(),
@@ -1219,6 +1467,28 @@ async fn ssh_tail_streams_events_until_cancelled() {
     assert!(response.status().is_success());
     let cancelled: Job = response.json().await.expect("invalid cancelled job json");
     assert_eq!(cancelled.status, JobStatus::Cancelled);
+
+    let persisted: Vec<LogEvent> = app
+        .get_job_events(&created.id)
+        .await
+        .json()
+        .await
+        .expect("persisted cancelled events");
+    assert!(
+        persisted
+            .iter()
+            .any(|event| event.message == "boot log line")
+    );
+    assert!(
+        persisted
+            .iter()
+            .any(|event| event.message == "tail warning")
+    );
+    assert!(
+        persisted
+            .iter()
+            .any(|event| event.message == "job cancelled")
+    );
 }
 
 #[tokio::test]
@@ -1989,6 +2259,48 @@ async fn get_job_evidence_returns_summary_and_downloadable_artifacts() {
     assert!(raw_stream.contains("boot ok"));
     assert!(raw_stream.contains("crc mismatch"));
     assert!(!raw_stream.contains('{'));
+}
+
+#[tokio::test]
+async fn job_evidence_uses_persisted_summary_without_reading_event_history() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let artifacts_dir = tempdir.path().join("artifacts");
+    let script = make_fake_ssh(tempdir.path(), "printf 'one\\ntwo\\n'\nexit 0");
+    let mut config = ssh_test_config(
+        script.display().to_string(),
+        tempdir.path().join("id_rsa").display().to_string(),
+    );
+    config.artifacts_dir = Some(artifacts_dir.display().to_string());
+    let app = spawn_app_with_config(config).await;
+    let created: Job = app
+        .post_action(
+            "board-alpha",
+            "ssh.exec",
+            Some(&ActionRequest {
+                payload: Some("summary without history read".into()),
+            }),
+        )
+        .await
+        .json()
+        .await
+        .expect("job json");
+    app.wait_for_job_status(&created.id, JobStatus::Succeeded)
+        .await;
+
+    let job_dir = artifacts_dir.join("jobs").join(&created.id);
+    assert!(job_dir.join("event-summary.json").exists());
+    fs::write(job_dir.join("events.ndjson"), b"not valid ndjson\n").expect("corrupt event history");
+
+    let response = app.get_job_evidence(&created.id).await;
+    assert!(response.status().is_success());
+    let evidence: JobEvidence = response.json().await.expect("evidence json");
+    assert!(
+        evidence
+            .summary
+            .highlights
+            .iter()
+            .any(|highlight| highlight.contains("captured 2 stdout lines"))
+    );
 }
 
 #[tokio::test]

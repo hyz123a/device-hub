@@ -207,10 +207,10 @@ async fn create_device_accepts_adb_only_targets() {
         .json()
         .await
         .expect("invalid device detail");
-    assert_eq!(detail.capabilities.has_ssh, false);
-    assert_eq!(detail.capabilities.has_serial, false);
-    assert_eq!(detail.capabilities.has_jlink, false);
-    assert_eq!(detail.capabilities.has_adb, true);
+    assert!(!detail.capabilities.has_ssh);
+    assert!(!detail.capabilities.has_serial);
+    assert!(!detail.capabilities.has_jlink);
+    assert!(detail.capabilities.has_adb);
 }
 
 #[tokio::test]
@@ -252,10 +252,10 @@ async fn update_device_replaces_connection_settings() {
         .await
         .expect("invalid device detail");
     assert_eq!(detail.device, updated);
-    assert_eq!(detail.capabilities.has_ssh, true);
-    assert_eq!(detail.capabilities.has_serial, false);
-    assert_eq!(detail.capabilities.has_jlink, true);
-    assert_eq!(detail.capabilities.has_adb, false);
+    assert!(detail.capabilities.has_ssh);
+    assert!(!detail.capabilities.has_serial);
+    assert!(detail.capabilities.has_jlink);
+    assert!(!detail.capabilities.has_adb);
 }
 
 #[tokio::test]

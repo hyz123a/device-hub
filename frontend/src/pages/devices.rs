@@ -294,7 +294,7 @@ pub fn devices_page() -> Html {
         let draft = draft.clone();
         let jlink_probes = (*jlink_probes).clone();
         use_effect_with(
-            (jlink_probes, (*draft).jlink_serial.clone()),
+            (jlink_probes, draft.jlink_serial.clone()),
             move |(probes, serial)| {
                 if let Some(autofill_serial) = autofill_jlink_serial(probes.as_deref(), serial) {
                     update_draft(&draft, move |next| next.select_jlink_probe(autofill_serial));
@@ -1110,17 +1110,19 @@ fn refresh_jlink_probes(
 }
 
 fn selected_serial_scan_value(current: &str, ports: Option<&[DiscoveredSerialPort]>) -> String {
-    ports
-        .is_some_and(|ports| ports.iter().any(|port| port.path == current))
-        .then(|| current.to_owned())
-        .unwrap_or_default()
+    if ports.is_some_and(|ports| ports.iter().any(|port| port.path == current)) {
+        current.to_owned()
+    } else {
+        String::new()
+    }
 }
 
 fn selected_jlink_scan_value(current: &str, probes: Option<&[DiscoveredJlinkProbe]>) -> String {
-    probes
-        .is_some_and(|probes| probes.iter().any(|probe| probe.serial == current))
-        .then(|| current.to_owned())
-        .unwrap_or_default()
+    if probes.is_some_and(|probes| probes.iter().any(|probe| probe.serial == current)) {
+        current.to_owned()
+    } else {
+        String::new()
+    }
 }
 
 fn lookup_jlink_board_profile<'a>(

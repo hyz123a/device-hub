@@ -3,11 +3,12 @@ use std::{path::PathBuf, time::Duration};
 use device_hub_server::{
     app::{
         build_router_with_job_policy, build_router_with_job_policy_and_board_profiles,
+        build_router_with_job_policy_and_evidence_store,
         build_router_with_job_policy_and_host_discovery,
         build_router_with_job_policy_and_serial_stream_opener,
     },
     config::AppConfig,
-    ports::{HostDiscoveryError, HostDiscoveryPort},
+    ports::{HostDiscoveryError, HostDiscoveryPort, JobEvidenceStorePort},
     services::job_manager::JobPolicyProvider,
 };
 use device_hub_shared::{
@@ -283,6 +284,38 @@ pub async fn spawn_app_with_config_and_job_policy(
 ) -> TestApp {
     let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
     let app = build_router_with_job_policy(config, policy_provider).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind random port");
+    let port = listener
+        .local_addr()
+        .expect("failed to read local addr")
+        .port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("test server crashed");
+    });
+
+    TestApp {
+        address: format!("http://127.0.0.1:{port}"),
+        api_client: reqwest::Client::new(),
+        artifacts_dir,
+    }
+}
+
+pub async fn spawn_app_with_config_and_evidence_store(
+    config: AppConfig,
+    evidence_store: impl JobEvidenceStorePort + 'static,
+) -> TestApp {
+    let artifacts_dir = config.artifacts_dir.clone().map(PathBuf::from);
+    let app = build_router_with_job_policy_and_evidence_store(
+        config,
+        JobPolicyProvider::default(),
+        evidence_store,
+    )
+    .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("failed to bind random port");

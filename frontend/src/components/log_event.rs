@@ -366,18 +366,20 @@ fn parse_ansi_segments(message: &str) -> Vec<AnsiSegment> {
     let mut idx = 0;
 
     while idx < bytes.len() {
-        if bytes[idx] == 0x1b && idx + 1 < bytes.len() && bytes[idx + 1] == b'[' {
-            if let Some((codes, next_idx)) = parse_sgr_codes(bytes, idx + 2) {
-                if !buffer.is_empty() {
-                    segments.push(AnsiSegment {
-                        text: std::mem::take(&mut buffer),
-                        style,
-                    });
-                }
-                apply_sgr_codes(&mut style, &codes);
-                idx = next_idx;
-                continue;
+        if bytes[idx] == 0x1b
+            && idx + 1 < bytes.len()
+            && bytes[idx + 1] == b'['
+            && let Some((codes, next_idx)) = parse_sgr_codes(bytes, idx + 2)
+        {
+            if !buffer.is_empty() {
+                segments.push(AnsiSegment {
+                    text: std::mem::take(&mut buffer),
+                    style,
+                });
             }
+            apply_sgr_codes(&mut style, &codes);
+            idx = next_idx;
+            continue;
         }
 
         if let Some(ch) = message[idx..].chars().next() {

@@ -886,10 +886,10 @@ fn serial_exec_request_from_action_payload(
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
 
-    if let Ok(request) = serde_json::from_str::<SerialExecRequest>(payload) {
-        if !request.command.trim().is_empty() {
-            return Some(request);
-        }
+    if let Ok(request) = serde_json::from_str::<SerialExecRequest>(payload)
+        && !request.command.trim().is_empty()
+    {
+        return Some(request);
     }
 
     Some(SerialExecRequest {

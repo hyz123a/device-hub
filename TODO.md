@@ -15,6 +15,15 @@
 - [x] Migrate `frontend` styling to Tailwind CSS by scanning `frontend/src/**/*.rs`, compiling a generated stylesheet, and switching `frontend/index.html` to load it
 
 ## Next
+- [x] Eliminate multi-device log stalls when live and persisted buffers reach their limits ([TDD guide](docs/plans/2026-07-15-multi-device-log-pipeline-tdd.md))
+  - Replace the frontend live-event `Vec` with a bounded ring/chunked buffer so eviction does not shift the full retained history.
+  - Make the selected buffered-event cap limit the underlying event store, not only the rendered snapshot.
+  - Feed xterm with incremental event batches instead of cloning, filtering, and comparing the full visible window on every render flush.
+  - Evict deduplication hashes together with their corresponding buffered events so dedup state remains bounded.
+  - Add a bounded tail-reading API/storage path that reads only the requested last N persisted events instead of deserializing the complete `events.ndjson` first.
+  - Build job evidence summaries without loading the complete persisted event history, and avoid reading the same history twice when opening job detail.
+  - Batch artifact persistence behind a buffered writer or dedicated writer task instead of opening and synchronously writing both artifact files for every event.
+  - Add regression tests and repeatable performance checks for multiple concurrent device streams, buffer rollover, large persisted artifacts, bounded memory growth, and responsive job-detail loading.
 - [x] Add `serial.exec` command/expect support with shared execution core, job evidence, and synchronous API response
 - [x] Add global event query API with richer filters
   - Support `GET /api/events` against the current server event cache.
