@@ -4,10 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+test-fixtures = []
+
 [dependencies]
 device-hub-shared = { path = "../../shared" }
 thiserror.workspace = true
 tokio.workspace = true
 
-[dev-dependencies]
-tempfile = "3"
+[[bin]]
+name = "adb-process-fixture"
+path = "../../test-support/adapter-process-fixture.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "process"
+path = "tests/process.rs"
+required-features = ["test-fixtures"]

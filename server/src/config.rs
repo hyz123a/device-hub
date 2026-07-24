@@ -4,6 +4,67 @@ use device_hub_shared::Device;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdapterEnablement {
+    #[serde(default = "enabled_by_default")]
+    pub serial: bool,
+    #[serde(default = "enabled_by_default")]
+    pub ssh: bool,
+    #[serde(default = "enabled_by_default")]
+    pub jlink: bool,
+    #[serde(default = "enabled_by_default")]
+    pub adb: bool,
+    #[serde(default)]
+    pub serial_reconnect: SerialReconnectConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SerialReconnectConfig {
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
+    #[serde(default = "default_reconnect_initial_delay_ms")]
+    pub initial_delay_ms: u64,
+    #[serde(default = "default_reconnect_max_delay_ms")]
+    pub max_delay_ms: u64,
+    #[serde(default = "enabled_by_default")]
+    pub prevent_system_sleep: bool,
+}
+
+impl Default for SerialReconnectConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: None,
+            initial_delay_ms: default_reconnect_initial_delay_ms(),
+            max_delay_ms: default_reconnect_max_delay_ms(),
+            prevent_system_sleep: true,
+        }
+    }
+}
+
+fn default_reconnect_initial_delay_ms() -> u64 {
+    100
+}
+
+fn default_reconnect_max_delay_ms() -> u64 {
+    2_000
+}
+
+impl Default for AdapterEnablement {
+    fn default() -> Self {
+        Self {
+            serial: true,
+            ssh: true,
+            jlink: true,
+            adb: true,
+            serial_reconnect: SerialReconnectConfig::default(),
+        }
+    }
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
@@ -18,6 +79,8 @@ pub struct AppConfig {
     pub adb_program: Option<String>,
     #[serde(default)]
     pub artifacts_dir: Option<String>,
+    #[serde(default)]
+    pub adapters: AdapterEnablement,
 }
 
 #[derive(Debug, Error)]
@@ -70,11 +133,36 @@ fn substitute_env_vars(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::substitute_env_vars;
+    use super::{AppConfig, substitute_env_vars};
 
     #[test]
     fn keeps_unknown_variable() {
         let value = substitute_env_vars("key: $UNKNOWN_DEVICE_HUB_VAR");
         assert_eq!(value, "key: $UNKNOWN_DEVICE_HUB_VAR");
+    }
+
+    #[test]
+    fn adapter_enablement_defaults_to_enabled_for_compiled_feature_compatibility() {
+        let config: AppConfig = serde_yaml::from_str("devices: []").expect("config");
+
+        assert!(config.adapters.serial);
+        assert!(config.adapters.ssh);
+        assert!(config.adapters.jlink);
+        assert!(config.adapters.adb);
+        assert_eq!(config.adapters.serial_reconnect.max_attempts, None);
+        assert!(config.adapters.serial_reconnect.prevent_system_sleep);
+    }
+
+    #[test]
+    fn adapter_enablement_can_disable_individual_adapters() {
+        let config: AppConfig = serde_yaml::from_str(
+            "devices: []\nadapters:\n  serial: true\n  ssh: false\n  jlink: false\n  adb: false\n",
+        )
+        .expect("config");
+
+        assert!(config.adapters.serial);
+        assert!(!config.adapters.ssh);
+        assert!(!config.adapters.jlink);
+        assert!(!config.adapters.adb);
     }
 }

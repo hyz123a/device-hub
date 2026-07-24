@@ -2,7 +2,7 @@ use device_hub_server::config::AppConfig;
 use device_hub_shared::{
     AdbConfig, Device, DeviceConnectionSummary, DeviceDetail, DeviceRuntimeStatus,
     DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig, Job, JobStatus, SerialConfig,
-    SshConfig,
+    SerialDeviceSelector, SshConfig,
 };
 
 use crate::helpers::{
@@ -38,6 +38,7 @@ fn base_config() -> AppConfig {
                 serial: Some(SerialConfig {
                     port: "/dev/ttyUSB0".into(),
                     baud: 115200,
+                    selector: None,
                 }),
                 jlink: None,
                 adb: None,
@@ -54,6 +55,7 @@ fn base_config() -> AppConfig {
                 serial: Some(SerialConfig {
                     port: "/dev/ttyUSB1".into(),
                     baud: 115200,
+                    selector: None,
                 }),
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),
@@ -70,6 +72,7 @@ fn base_config() -> AppConfig {
         jlink_program: None,
         adb_program: None,
         artifacts_dir: None,
+        adapters: Default::default(),
     }
 }
 
@@ -81,6 +84,7 @@ fn create_only_serial_device() -> Device {
         serial: Some(SerialConfig {
             port: "/dev/ttyUSB9".into(),
             baud: 57600,
+            selector: None,
         }),
         jlink: None,
         adb: None,
@@ -132,6 +136,7 @@ async fn get_device_returns_detail_for_known_device() {
                 serial: Some(SerialConfig {
                     port: "/dev/ttyUSB1".into(),
                     baud: 115200,
+                    selector: None,
                 }),
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),
@@ -211,6 +216,21 @@ async fn create_device_accepts_adb_only_targets() {
     assert!(!detail.capabilities.has_serial);
     assert!(!detail.capabilities.has_jlink);
     assert!(detail.capabilities.has_adb);
+}
+
+#[tokio::test]
+async fn create_device_rejects_an_empty_serial_selector() {
+    let app = spawn_app().await;
+    let mut device = create_only_serial_device();
+    device.serial.as_mut().expect("serial").selector = Some(SerialDeviceSelector::default());
+
+    let response = app.create_device(&device).await;
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.text().await.expect("error body"),
+        r#"{"error":"bad request: serial selector requires at least one stable USB attribute"}"#
+    );
 }
 
 #[tokio::test]
@@ -406,10 +426,15 @@ async fn list_serial_ports_returns_discovered_host_devices() {
                 DiscoveredSerialPort {
                     path: "/dev/ttyUSB1".into(),
                     label: Some("Segger UART".into()),
+                    vid: Some(0x1366),
+                    pid: Some(0x0105),
+                    serial_number: Some("JLINK-1".into()),
+                    physical_location: Some("1-2.3".into()),
                 },
                 DiscoveredSerialPort {
                     path: "/dev/ttyACM0".into(),
                     label: Some("Debug console".into()),
+                    ..Default::default()
                 },
             ],
             jlink_probes: Vec::new(),
@@ -428,10 +453,15 @@ async fn list_serial_ports_returns_discovered_host_devices() {
             DiscoveredSerialPort {
                 path: "/dev/ttyACM0".into(),
                 label: Some("Debug console".into()),
+                ..Default::default()
             },
             DiscoveredSerialPort {
                 path: "/dev/ttyUSB1".into(),
                 label: Some("Segger UART".into()),
+                vid: Some(0x1366),
+                pid: Some(0x0105),
+                serial_number: Some("JLINK-1".into()),
+                physical_location: Some("1-2.3".into()),
             },
         ]
     );

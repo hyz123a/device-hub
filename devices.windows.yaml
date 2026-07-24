@@ -1,0 +1,47 @@
+adapters:
+  serial: true
+  ssh: false
+  jlink: false
+  adb: false
+  serial_reconnect:
+    max_attempts: null
+    initial_delay_ms: 100
+    max_delay_ms: 2000
+    prevent_system_sleep: true
+
+device_registry_path: .device-registry.yaml
+artifacts_dir: .artifacts
+
+devices:
+  - id: homebase1
+    label: HomeBase
+    serial:
+      port: COM25
+      baud: 115200
+      selector:
+        vid: 6790
+        pid: 29987
+        serial_number: "7"
+        physical_location: "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)#USB(1)"
+
+  - id: camera1
+    label: Camera
+    serial:
+      port: COM47
+      baud: 115200
+      selector:
+        vid: 6790
+        pid: 29987
+        serial_number: "8"
+        physical_location: "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)#USB(2)#USB(2)"
+
+  - id: windows-uart
+    label: Windows CH340 UART
+    serial:
+      port: COM24
+      baud: 115200
+      selector:
+        vid: 6790
+        pid: 29987
+        serial_number: "7"
+        physical_location: "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)#USB(4)"

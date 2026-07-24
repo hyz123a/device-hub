@@ -2,7 +2,6 @@
 name: device-hub-user
 description: Use the local Device Hub service as an API-first operator, including inspect devices, run supported actions, review job evidence, and inspect filtered live or historical logs.
 license: MIT
-compatibility: opencode
 metadata:
   audience: users
   service: device-hub
@@ -26,28 +25,51 @@ metadata:
 
 ## Service endpoints
 
-- Backend base URL: `http://127.0.0.1:3000`
+- Linux/WSL server default: `http://127.0.0.1:3000`
+- Windows-native server launched from WSL default: `http://127.0.0.1:3001`
 
-Adjust this only if the running environment or user explicitly says it differs.
+Resolve the intended service before issuing any device or job operation:
+
+- Use `3001` for Windows-native COM devices such as `windows-uart`, `homebase1`, and `camera1`.
+- Use `3000` for the Linux/WSL development server unless the user says otherwise.
+- When both may be running, do not select a service merely because `/api` responds. Query `/api/capabilities` and `/api/devices`, and match the requested device and adapter.
+- `tools/run-windows-from-wsl.sh status` reports the managed Windows server URL and PID.
+- Set `DEVICE_HUB_URL` and the matching `DEVICE_HUB_WS_URL` once, then reuse them for the whole workflow.
+
+Windows-native example:
+
+```bash
+DEVICE_HUB_URL=http://127.0.0.1:3001
+DEVICE_HUB_WS_URL=ws://127.0.0.1:3001
+```
+
+Linux/WSL example:
+
+```bash
+DEVICE_HUB_URL=http://127.0.0.1:3000
+DEVICE_HUB_WS_URL=ws://127.0.0.1:3000
+```
 
 ## Supported user flows
 
 1. Health check
 
 ```bash
-curl -s http://127.0.0.1:3000/api/devices
+curl -s "${DEVICE_HUB_URL}/api"
+curl -s "${DEVICE_HUB_URL}/api/capabilities"
+curl -s "${DEVICE_HUB_URL}/api/devices"
 ```
 
 2. List devices
 
 ```bash
-curl -s http://127.0.0.1:3000/api/devices
+curl -s "${DEVICE_HUB_URL}/api/devices"
 ```
 
 3. Inspect one device
 
 ```bash
-curl -s http://127.0.0.1:3000/api/devices/<device-id>
+curl -s "${DEVICE_HUB_URL}/api/devices/<device-id>"
 ```
 
 Notes:
@@ -61,41 +83,41 @@ Notes:
 Examples:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.exec \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/ssh.exec" \
   -H 'content-type: application/json' \
   -d '{"payload":"uname -a"}'
 
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.tail \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/ssh.tail" \
   -H 'content-type: application/json' \
   -d '{"payload":"/var/log/syslog"}'
 
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/ssh.tail
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/ssh.tail"
 
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.tail \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/serial.tail" \
   -H 'content-type: application/json' \
   -d 'null'
 
-curl -s -X POST 'http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.tail?reuse=true' \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/serial.tail?reuse=true" \
   -H 'content-type: application/json' \
   -d 'null'
 
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.write \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/serial.write" \
   -H 'content-type: application/json' \
   -d '{"payload":"help\n"}'
 
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.exec \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/serial.exec" \
   -H 'content-type: application/json' \
   -d '{"payload":"ip route"}'
 
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/serial.exec \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/serial.exec" \
   -H 'content-type: application/json' \
   -d '{"payload":"{\"command\":\"iwpriv ra0 show psinfo\",\"timeout_secs\":5,\"until\":\"# \"}"}'
 
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/actions/adb.logcat \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/adb.logcat" \
   -H 'content-type: application/json' \
   -d 'null'
 
-curl -s -X POST 'http://127.0.0.1:3000/api/devices/<device-id>/actions/adb.logcat?reuse=true' \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/actions/adb.logcat?reuse=true" \
   -H 'content-type: application/json' \
   -d 'null'
 ```
@@ -105,7 +127,7 @@ curl -s -X POST 'http://127.0.0.1:3000/api/devices/<device-id>/actions/adb.logca
 Use this when the user wants command output without manually inspecting a tail stream. If an active `serial.tail` exists for the device, Device Hub reuses that tail session for command/expect capture; otherwise it opens a temporary serial session for the command.
 
 ```bash
-curl -s -X POST http://127.0.0.1:3000/api/devices/<device-id>/serial/exec \
+curl -s -X POST "${DEVICE_HUB_URL}/api/devices/<device-id>/serial/exec" \
   -H 'content-type: application/json' \
   -d '{"command":"ip route","timeout_secs":5,"until":"# "}'
 ```
@@ -126,9 +148,9 @@ Notes:
 6. Check job status and events
 
 ```bash
-curl -s http://127.0.0.1:3000/api/jobs/<job-id>
-curl -s http://127.0.0.1:3000/api/jobs/<job-id>/events
-curl -s http://127.0.0.1:3000/api/jobs/<job-id>/evidence
+curl -s "${DEVICE_HUB_URL}/api/jobs/<job-id>"
+curl -s "${DEVICE_HUB_URL}/api/jobs/<job-id>/events"
+curl -s "${DEVICE_HUB_URL}/api/jobs/<job-id>/evidence"
 ```
 
 7. Watch live events over WebSocket
@@ -136,11 +158,11 @@ curl -s http://127.0.0.1:3000/api/jobs/<job-id>/evidence
 Examples:
 
 ```text
-ws://127.0.0.1:3000/api/ws?device_id=<device-id>
-ws://127.0.0.1:3000/api/ws?device_id=<device-id>&source=serial
-ws://127.0.0.1:3000/api/ws?device_id=<device-id>&source=adb
-ws://127.0.0.1:3000/api/ws?device_id=<device-id>&source=ssh&search=timeout
-ws://127.0.0.1:3000/api/ws?device_id=<device-id>&structured_only=true
+${DEVICE_HUB_WS_URL}/api/ws?device_id=<device-id>
+${DEVICE_HUB_WS_URL}/api/ws?device_id=<device-id>&source=serial
+${DEVICE_HUB_WS_URL}/api/ws?device_id=<device-id>&source=adb
+${DEVICE_HUB_WS_URL}/api/ws?device_id=<device-id>&source=ssh&search=timeout
+${DEVICE_HUB_WS_URL}/api/ws?device_id=<device-id>&structured_only=true
 ```
 
 Supported WebSocket filters:
@@ -161,11 +183,11 @@ Notes:
 8. Filter job events for debugging
 
 ```bash
-curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial"
-curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=adb"
-curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?level=error"
-curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial&search=panic"
-curl -s "http://127.0.0.1:3000/api/jobs/<job-id>/events?source=serial&level=error&search=timeout"
+curl -s "${DEVICE_HUB_URL}/api/jobs/<job-id>/events?source=serial"
+curl -s "${DEVICE_HUB_URL}/api/jobs/<job-id>/events?source=adb"
+curl -s "${DEVICE_HUB_URL}/api/jobs/<job-id>/events?level=error"
+curl -s "${DEVICE_HUB_URL}/api/jobs/<job-id>/events?source=serial&search=panic"
+curl -s "${DEVICE_HUB_URL}/api/jobs/<job-id>/events?source=serial&level=error&search=timeout"
 ```
 
 Supported filters:
@@ -177,11 +199,11 @@ Supported filters:
 9. Query recent cached events without a job id
 
 ```bash
-curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&source=serial&since=5m"
-curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&source=adb&since=5m"
-curl -s "http://127.0.0.1:3000/api/events?device_id=homebase1,camera1&search=history&since=5m"
-curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&search_any=reset,key,factory_reset,button_reset,KEY_UNBIND&since=5m"
-curl -s "http://127.0.0.1:3000/api/events?device_id=<device-id>&search_regex=wifi_link%7CKEEP_NORMAL&since=5m"
+curl -s "${DEVICE_HUB_URL}/api/events?device_id=<device-id>&source=serial&since=5m"
+curl -s "${DEVICE_HUB_URL}/api/events?device_id=<device-id>&source=adb&since=5m"
+curl -s "${DEVICE_HUB_URL}/api/events?device_id=homebase1,camera1&search=history&since=5m"
+curl -s "${DEVICE_HUB_URL}/api/events?device_id=<device-id>&search_any=reset,key,factory_reset,button_reset,KEY_UNBIND&since=5m"
+curl -s "${DEVICE_HUB_URL}/api/events?device_id=<device-id>&search_regex=wifi_link%7CKEEP_NORMAL&since=5m"
 ```
 
 Supported filters:
@@ -204,16 +226,16 @@ Notes:
 10. Download artifacts when needed
 
 ```bash
-curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/job.json
-curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/events.ndjson
-curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/output.txt
-curl -OJ http://127.0.0.1:3000/api/jobs/<job-id>/artifacts/result.json
+curl -OJ "${DEVICE_HUB_URL}/api/jobs/<job-id>/artifacts/job.json"
+curl -OJ "${DEVICE_HUB_URL}/api/jobs/<job-id>/artifacts/events.ndjson"
+curl -OJ "${DEVICE_HUB_URL}/api/jobs/<job-id>/artifacts/output.txt"
+curl -OJ "${DEVICE_HUB_URL}/api/jobs/<job-id>/artifacts/result.json"
 ```
 
 11. Clear the in-memory log cache
 
 ```bash
-curl -s -X DELETE http://127.0.0.1:3000/api/events
+curl -s -X DELETE "${DEVICE_HUB_URL}/api/events"
 ```
 
 Notes:
@@ -225,19 +247,19 @@ Notes:
 12. Rerun a job with the same inputs
 
 ```bash
-curl -s -X POST http://127.0.0.1:3000/api/jobs/<job-id>/rerun
+curl -s -X POST "${DEVICE_HUB_URL}/api/jobs/<job-id>/rerun"
 ```
 
 13. Cancel a running job
 
 ```bash
-curl -s -X DELETE http://127.0.0.1:3000/api/jobs/<job-id>
+curl -s -X DELETE "${DEVICE_HUB_URL}/api/jobs/<job-id>"
 ```
 
 ## Workflow
 
 1. Confirm whether the user wants API execution, log inspection, or service troubleshooting.
-2. Check backend availability before running actions.
+2. Resolve `DEVICE_HUB_URL`, then check backend availability, capabilities, and devices before running actions. If both localhost ports respond, select by requested device/adapter rather than response order.
 3. If the task targets a device action, list devices first and verify the target device supports the requested action.
 4. For actions that require payloads, confirm or infer the exact payload:
 
@@ -314,6 +336,8 @@ Next: <useful next step or none>
 - For `ssh.tail`, ask only when the payload is missing and the device does not have `ssh.default_log_path` configured.
 - Prefer using the rerun endpoint for repeat attempts so the same stored inputs are reused.
 - If the backend is down, say so clearly and help restart or diagnose it before issuing device commands.
+- For the managed Windows-native instance, use `tools/run-windows-from-wsl.sh status` before `start`; repeated `start` is safe and reports the existing PID and URL.
+- Never route a Windows COM action to the WSL `3000` instance merely because that endpoint is healthy.
 - Treat long-running tails as ongoing jobs; cancel them explicitly instead of assuming they stop on their own.
 - Treat `adb.logcat` as a long-running tail job; reuse or cancel it explicitly.
 - Treat `serial.write` as a short-lived job that confirms bytes were sent, not as the place to inspect device output.
@@ -328,6 +352,6 @@ Next: <useful next step or none>
 
 Users can copy this skill folder and adjust only operator-facing details:
 
-- Base URL if the service does not run on `3000`
+- Linux/WSL or Windows-native base URL if the service does not use `3000` or `3001`
 - Supported action examples if the deployment exposes more or fewer actions
 - Response format if they prefer more concise or more verbose operator output

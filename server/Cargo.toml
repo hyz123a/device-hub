@@ -5,13 +5,22 @@ edition.workspace = true
 license.workspace = true
 build = "build.rs"
 
+[features]
+default = ["serial"]
+serial = ["dep:device-hub-adapter-serial", "dep:tokio-serial"]
+ssh = ["dep:device-hub-adapter-ssh"]
+jlink = ["dep:device-hub-adapter-jlink"]
+adb = ["dep:device-hub-adapter-adb"]
+full = ["serial", "ssh", "jlink", "adb"]
+test-fixtures = []
+
 [dependencies]
 axum.workspace = true
 chrono.workspace = true
-device-hub-adapter-jlink = { path = "../adapters/jlink" }
-device-hub-adapter-serial = { path = "../adapters/serial" }
-device-hub-adapter-ssh = { path = "../adapters/ssh" }
-device-hub-adapter-adb = { path = "../adapters/adb" }
+device-hub-adapter-jlink = { path = "../adapters/jlink", optional = true }
+device-hub-adapter-serial = { path = "../adapters/serial", optional = true }
+device-hub-adapter-ssh = { path = "../adapters/ssh", optional = true }
+device-hub-adapter-adb = { path = "../adapters/adb", optional = true }
 device-hub-shared = { path = "../shared" }
 futures.workspace = true
 regex = "1"
@@ -20,7 +29,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-serial = "5"
+tokio-serial = { version = "5", optional = true }
 tokio-stream.workspace = true
 tar = "0.4"
 tower-http.workspace = true
@@ -33,3 +42,16 @@ tokio-tungstenite = "0.24"
 
 [build-dependencies]
 tar = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
+
+[[test]]
+name = "api"
+path = "tests/api/main.rs"
+required-features = ["full", "test-fixtures"]
+
+[[bin]]
+name = "device-hub-test-tool"
+path = "src/bin/device-hub-test-tool.rs"
+required-features = ["test-fixtures"]

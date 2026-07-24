@@ -2,26 +2,42 @@ use axum::{
     Router,
     routing::{get, post},
 };
+#[cfg(feature = "adb")]
 use device_hub_adapter_adb::AdbAdapter;
+#[cfg(feature = "jlink")]
 use device_hub_adapter_jlink::JlinkAdapter;
+#[cfg(feature = "serial")]
 use device_hub_adapter_serial::SerialAdapter;
+#[cfg(feature = "ssh")]
 use device_hub_adapter_ssh::SshAdapter;
+use futures::future::BoxFuture;
 use std::{path::PathBuf, sync::Arc};
 use tower_http::cors::CorsLayer;
 
+#[cfg(feature = "adb")]
+use crate::services::adapter_action_runner::AdbActionHandler;
+#[cfg(feature = "jlink")]
+use crate::services::adapter_action_runner::JlinkActionHandler;
+#[cfg(feature = "ssh")]
+use crate::services::adapter_action_runner::SshActionHandler;
+#[cfg(feature = "serial")]
+use crate::services::{
+    adapter_action_runner::{SerialActionHandler, SerialReconnectPolicy},
+    adapter_serial_command_executor::AdapterSerialCommandExecutor,
+};
 use crate::{
     api, board_profiles,
-    config::AppConfig,
+    config::{AdapterEnablement, AppConfig},
     events::EventBus,
     frontend::{self, FrontendAssets},
     ports::{
-        DynEventPersistence, DynHostDiscovery, DynJobEvidenceStore, HostDiscoveryPort,
-        JobEvidenceStorePort,
+        ActionRunner, CapabilityProviderPort, DynActionRunner, DynCapabilityProvider,
+        DynEventPersistence, DynHostDiscovery, DynJobEvidenceStore, DynSerialCommandExecutor,
+        HostDiscoveryPort, JobEvidenceStorePort, SerialCommandError, SerialCommandExecutorPort,
     },
     services::{
-        adapter_action_runner::AdapterActionRunner,
+        adapter_action_runner::CapabilityRegistry,
         adapter_host_discovery::AdapterHostDiscovery,
-        adapter_serial_command_executor::AdapterSerialCommandExecutor,
         job_manager::{JobManager, JobPolicyProvider},
     },
     storage::{
@@ -30,12 +46,32 @@ use crate::{
     },
     use_cases::{AppUseCaseDependencies, AppUseCases},
 };
+use device_hub_shared::{
+    AdapterCapability, CapabilitySnapshot, Device, SerialExecRequest, SerialExecResult,
+};
 
 #[derive(Clone)]
 pub struct AppState {
     pub use_cases: AppUseCases,
     pub events: EventBus,
     pub frontend: FrontendAssets,
+}
+
+#[derive(Clone)]
+struct UnavailableSerialCommandExecutor;
+
+impl SerialCommandExecutorPort for UnavailableSerialCommandExecutor {
+    fn exec(
+        &self,
+        _device: Device,
+        _request: SerialExecRequest,
+    ) -> BoxFuture<'static, Result<SerialExecResult, SerialCommandError>> {
+        Box::pin(async {
+            Err(SerialCommandError::Failed(
+                "serial capability is unavailable".into(),
+            ))
+        })
+    }
 }
 
 pub async fn build_router(config: AppConfig) -> Router {
@@ -62,7 +98,7 @@ pub async fn build_router_with_job_policy_and_board_profiles(
     build_router_with_components(
         config,
         policy_provider,
-        SerialAdapter::new(),
+        BuildOverrides::default(),
         None,
         board_profiles,
         None,
@@ -70,6 +106,7 @@ pub async fn build_router_with_job_policy_and_board_profiles(
     .await
 }
 
+#[cfg(feature = "serial")]
 pub async fn build_router_with_job_policy_and_serial_stream_opener(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
@@ -87,7 +124,10 @@ pub async fn build_router_with_job_policy_and_serial_stream_opener(
     build_router_with_components(
         config,
         policy_provider,
-        serial_adapter,
+        BuildOverrides {
+            serial_adapter: Some(serial_adapter),
+            ..Default::default()
+        },
         None,
         Vec::new(),
         None,
@@ -103,7 +143,7 @@ pub async fn build_router_with_job_policy_and_host_discovery(
     build_router_with_components(
         config,
         policy_provider,
-        SerialAdapter::new(),
+        BuildOverrides::default(),
         Some(Arc::new(host_discovery)),
         Vec::new(),
         None,
@@ -119,7 +159,7 @@ pub async fn build_router_with_job_policy_and_evidence_store(
     build_router_with_components(
         config,
         policy_provider,
-        SerialAdapter::new(),
+        BuildOverrides::default(),
         None,
         Vec::new(),
         Some(Arc::new(evidence_store)),
@@ -127,10 +167,43 @@ pub async fn build_router_with_job_policy_and_evidence_store(
     .await
 }
 
+pub async fn build_router_with_job_policy_and_action_runtime<
+    R: ActionRunner + CapabilityProviderPort + 'static,
+>(
+    config: AppConfig,
+    policy_provider: JobPolicyProvider,
+    action_runtime: R,
+) -> Router {
+    let action_runtime = Arc::new(action_runtime);
+    let action_runner: DynActionRunner = action_runtime.clone();
+    let capability_provider: DynCapabilityProvider = action_runtime;
+    build_router_with_components(
+        config,
+        policy_provider,
+        BuildOverrides {
+            action_runner: Some(action_runner),
+            capability_provider: Some(capability_provider),
+            ..Default::default()
+        },
+        None,
+        Vec::new(),
+        None,
+    )
+    .await
+}
+
+#[derive(Default)]
+struct BuildOverrides {
+    #[cfg(feature = "serial")]
+    serial_adapter: Option<SerialAdapter>,
+    action_runner: Option<DynActionRunner>,
+    capability_provider: Option<DynCapabilityProvider>,
+}
+
 async fn build_router_with_components(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
-    serial_adapter: SerialAdapter,
+    mut overrides: BuildOverrides,
     host_discovery: Option<DynHostDiscovery>,
     board_profiles: Vec<device_hub_shared::BoardProfile>,
     evidence_store: Option<DynJobEvidenceStore>,
@@ -142,6 +215,7 @@ async fn build_router_with_components(
         jlink_program,
         adb_program,
         artifacts_dir,
+        adapters,
     } = config;
     let artifacts_root = PathBuf::from(artifacts_dir.unwrap_or_else(|| ".artifacts".into()));
     let artifacts = ArtifactStore::new(&artifacts_root);
@@ -155,33 +229,110 @@ async fn build_router_with_components(
             .expect("failed to initialize device registry"),
     );
     let jobs = JobStore::new();
-    let ssh_adapter = match ssh_program {
-        Some(program) => SshAdapter::with_program(program),
-        None => SshAdapter::new(),
-    };
-    let jlink_adapter = match jlink_program {
-        Some(program) => JlinkAdapter::with_program(program),
-        None => JlinkAdapter::new(),
-    };
-    let adb_adapter = match adb_program {
-        Some(program) => AdbAdapter::with_program(program),
-        None => AdbAdapter::new(),
-    };
-    let host_discovery = host_discovery.unwrap_or_else(|| {
-        Arc::new(AdapterHostDiscovery::new(
-            serial_adapter.clone(),
-            jlink_adapter.clone(),
-        ))
-    });
-    let serial_command_executor =
-        Arc::new(AdapterSerialCommandExecutor::new(serial_adapter.clone()));
-    let action_runner = Arc::new(AdapterActionRunner::new(
-        ssh_adapter,
-        jlink_adapter,
-        serial_adapter,
-        adb_adapter,
-        serial_command_executor.clone(),
-    ));
+    let mut registry = CapabilityRegistry::new(capability_definitions(&adapters));
+    let mut adapter_host_discovery = AdapterHostDiscovery::new();
+    let mut serial_command_executor: DynSerialCommandExecutor =
+        Arc::new(UnavailableSerialCommandExecutor);
+
+    #[cfg(feature = "serial")]
+    if adapters.serial {
+        let serial_adapter = overrides.serial_adapter.take().unwrap_or_default();
+        adapter_host_discovery = adapter_host_discovery.with_serial(serial_adapter.clone());
+        serial_command_executor =
+            Arc::new(AdapterSerialCommandExecutor::new(serial_adapter.clone()));
+        let initial_delay_ms = adapters.serial_reconnect.initial_delay_ms.clamp(10, 60_000);
+        let max_delay_ms = adapters
+            .serial_reconnect
+            .max_delay_ms
+            .clamp(initial_delay_ms, 60_000);
+        registry
+            .register(
+                "serial",
+                &["serial.tail", "serial.write", "serial.exec"],
+                SerialActionHandler::with_reconnect_policy(
+                    serial_adapter,
+                    serial_command_executor.clone(),
+                    SerialReconnectPolicy {
+                        max_attempts: adapters.serial_reconnect.max_attempts,
+                        initial_delay: std::time::Duration::from_millis(initial_delay_ms),
+                        max_delay: std::time::Duration::from_millis(max_delay_ms),
+                        prevent_system_sleep: adapters.serial_reconnect.prevent_system_sleep,
+                    },
+                ),
+            )
+            .expect("serial capability registration must be valid");
+    }
+
+    #[cfg(feature = "ssh")]
+    if adapters.ssh {
+        let ssh_adapter = match ssh_program {
+            Some(program) => SshAdapter::with_program(program),
+            None => SshAdapter::new(),
+        };
+        registry
+            .register(
+                "ssh",
+                &["ssh.exec", "ssh.tail", "ssh.reboot"],
+                SshActionHandler::new(ssh_adapter),
+            )
+            .expect("ssh capability registration must be valid");
+    }
+
+    #[cfg(feature = "jlink")]
+    if adapters.jlink {
+        let jlink_adapter = match jlink_program {
+            Some(program) => JlinkAdapter::with_program(program),
+            None => JlinkAdapter::new(),
+        };
+        adapter_host_discovery = adapter_host_discovery.with_jlink(jlink_adapter.clone());
+        registry
+            .register(
+                "jlink",
+                &[
+                    "jlink.probe",
+                    "jlink.flash",
+                    "jlink.verify",
+                    "jlink.reset",
+                    "jlink.erase",
+                ],
+                JlinkActionHandler::new(jlink_adapter),
+            )
+            .expect("jlink capability registration must be valid");
+    }
+
+    #[cfg(feature = "adb")]
+    if adapters.adb {
+        let adb_adapter = match adb_program {
+            Some(program) => AdbAdapter::with_program(program),
+            None => AdbAdapter::new(),
+        };
+        registry
+            .register("adb", &["adb.logcat"], AdbActionHandler::new(adb_adapter))
+            .expect("adb capability registration must be valid");
+    }
+
+    #[cfg(not(feature = "ssh"))]
+    let _ = ssh_program;
+    #[cfg(not(feature = "jlink"))]
+    let _ = jlink_program;
+    #[cfg(not(feature = "adb"))]
+    let _ = adb_program;
+    #[cfg(not(feature = "serial"))]
+    let _ = &mut overrides;
+
+    let host_discovery = host_discovery.unwrap_or_else(|| Arc::new(adapter_host_discovery));
+    let capability_provider: DynCapabilityProvider = overrides
+        .capability_provider
+        .take()
+        .unwrap_or_else(|| Arc::new(registry.clone()));
+    eprintln!(
+        "device-hub capabilities: {}",
+        format_capability_snapshot(&capability_provider.snapshot())
+    );
+    let action_runner: DynActionRunner = overrides
+        .action_runner
+        .take()
+        .unwrap_or_else(|| Arc::new(registry));
     let frontend = FrontendAssets::load_from_embedded_bundle()
         .expect("failed to load embedded frontend assets");
     let job_manager = JobManager::new_with_policy(
@@ -201,6 +352,7 @@ async fn build_router_with_components(
             events: events.clone(),
             evidence_store: evidence_store.unwrap_or_else(|| Arc::new(artifacts.clone())),
             serial_command_executor,
+            capabilities: capability_provider,
         },
     );
 
@@ -212,6 +364,7 @@ async fn build_router_with_components(
 
     let api_router = Router::new()
         .route("/", get(api::root))
+        .route("/capabilities", get(api::list_capabilities))
         .route("/board-profiles", get(api::list_board_profiles))
         .route("/devices", get(api::list_devices).post(api::create_device))
         .route("/host/serial-ports", get(api::list_serial_ports))
@@ -252,4 +405,120 @@ async fn build_router_with_components(
 
 pub fn load_default_board_profiles() -> Vec<device_hub_shared::BoardProfile> {
     board_profiles::load("board-profiles.yaml").unwrap_or_default()
+}
+
+fn capability_definitions(enablement: &AdapterEnablement) -> Vec<AdapterCapability> {
+    vec![
+        capability(
+            "serial",
+            cfg!(feature = "serial"),
+            enablement.serial,
+            &["serial.tail", "serial.write", "serial.exec"],
+        ),
+        capability(
+            "ssh",
+            cfg!(feature = "ssh"),
+            enablement.ssh,
+            &["ssh.exec", "ssh.tail", "ssh.reboot"],
+        ),
+        capability(
+            "jlink",
+            cfg!(feature = "jlink"),
+            enablement.jlink,
+            &[
+                "jlink.probe",
+                "jlink.flash",
+                "jlink.verify",
+                "jlink.reset",
+                "jlink.erase",
+            ],
+        ),
+        capability(
+            "adb",
+            cfg!(feature = "adb"),
+            enablement.adb,
+            &["adb.logcat"],
+        ),
+    ]
+}
+
+fn capability(
+    adapter_id: &str,
+    compiled: bool,
+    enabled: bool,
+    actions: &[&str],
+) -> AdapterCapability {
+    let enabled = compiled && enabled;
+    AdapterCapability {
+        adapter_id: adapter_id.to_owned(),
+        compiled,
+        enabled,
+        available: false,
+        actions: actions.iter().map(|action| (*action).to_owned()).collect(),
+        unavailable_reason: Some(if !compiled {
+            "not_compiled".into()
+        } else if !enabled {
+            "disabled".into()
+        } else {
+            "not_registered".into()
+        }),
+    }
+}
+
+fn format_capability_snapshot(snapshot: &CapabilitySnapshot) -> String {
+    snapshot
+        .adapters
+        .iter()
+        .map(|capability| {
+            let state = if capability.available {
+                "available"
+            } else {
+                capability
+                    .unavailable_reason
+                    .as_deref()
+                    .unwrap_or("unavailable")
+            };
+            format!(
+                "{}={state}[{}]",
+                capability.adapter_id,
+                capability.actions.join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_capability_snapshot;
+    use device_hub_shared::{AdapterCapability, CapabilitySnapshot};
+
+    #[test]
+    fn startup_capability_summary_reports_final_registration_state() {
+        let snapshot = CapabilitySnapshot {
+            adapters: vec![
+                AdapterCapability {
+                    adapter_id: "serial".into(),
+                    compiled: true,
+                    enabled: true,
+                    available: true,
+                    actions: vec!["serial.tail".into(), "serial.write".into()],
+                    unavailable_reason: None,
+                },
+                AdapterCapability {
+                    adapter_id: "ssh".into(),
+                    compiled: false,
+                    enabled: false,
+                    available: false,
+                    actions: vec!["ssh.exec".into()],
+                    unavailable_reason: Some("not_compiled".into()),
+                },
+            ],
+        };
+
+        assert_eq!(
+            format_capability_snapshot(&snapshot),
+            "serial=available[serial.tail,serial.write]; ssh=not_compiled[ssh.exec]"
+        );
+    }
 }

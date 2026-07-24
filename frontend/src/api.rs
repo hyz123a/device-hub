@@ -1,6 +1,6 @@
 use device_hub_shared::{
-    ActionRequest, BoardProfile, Device, DeviceDetail, DiscoveredJlinkProbe, DiscoveredSerialPort,
-    Job, JobEvidence, LogCacheClearResponse, LogEvent,
+    ActionRequest, BoardProfile, CapabilitySnapshot, Device, DeviceDetail, DiscoveredJlinkProbe,
+    DiscoveredSerialPort, Job, JobEvidence, LogCacheClearResponse, LogEvent,
 };
 use gloo_net::http::{Request, Response};
 use serde::Deserialize;
@@ -14,6 +14,14 @@ struct ErrorBody {
 
 pub async fn list_devices() -> Result<Vec<Device>, String> {
     let response = Request::get(&format!("{API_PREFIX}/devices"))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    decode_json(response).await
+}
+
+pub async fn list_capabilities() -> Result<CapabilitySnapshot, String> {
+    let response = Request::get(&format!("{API_PREFIX}/capabilities"))
         .send()
         .await
         .map_err(|err| err.to_string())?;

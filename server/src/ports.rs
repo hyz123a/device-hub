@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use device_hub_shared::{
-    ActionRequest, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, EventFilter, Job,
-    JobArtifact, LogEvent, SerialExecRequest, SerialExecResult,
+    ActionRequest, CapabilitySnapshot, Device, DiscoveredJlinkProbe, DiscoveredSerialPort,
+    EventFilter, Job, JobArtifact, LogEvent, SerialExecRequest, SerialExecResult,
 };
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,12 @@ pub trait ActionRunner: Send + Sync {
 }
 
 pub type DynActionRunner = Arc<dyn ActionRunner>;
+
+pub trait CapabilityProviderPort: Send + Sync {
+    fn snapshot(&self) -> CapabilitySnapshot;
+}
+
+pub type DynCapabilityProvider = Arc<dyn CapabilityProviderPort>;
 
 #[derive(Debug, Error)]
 pub enum SerialCommandError {

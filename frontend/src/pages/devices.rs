@@ -3,10 +3,13 @@ use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 use yew_router::prelude::Link;
 
-use crate::{api, app::Route};
+use crate::{
+    api,
+    app::{CapabilityContext, Route},
+};
 use device_hub_shared::{
     AdbConfig, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort, JlinkConfig,
-    SerialConfig, SshConfig, default_adb_logcat_args, default_ssh_log_path,
+    SerialConfig, SerialDeviceSelector, SshConfig, default_adb_logcat_args, default_ssh_log_path,
 };
 
 #[derive(Clone, PartialEq)]
@@ -21,6 +24,10 @@ struct DeviceDraft {
     serial_enabled: bool,
     serial_port: String,
     serial_baud: String,
+    serial_vid: String,
+    serial_pid: String,
+    serial_number: String,
+    serial_physical_location: String,
     jlink_enabled: bool,
     selected_jlink_board_profile_id: Option<String>,
     jlink_serial: String,
@@ -47,6 +54,10 @@ impl Default for DeviceDraft {
             serial_enabled: false,
             serial_port: String::new(),
             serial_baud: "115200".into(),
+            serial_vid: String::new(),
+            serial_pid: String::new(),
+            serial_number: String::new(),
+            serial_physical_location: String::new(),
             jlink_enabled: false,
             selected_jlink_board_profile_id: None,
             jlink_serial: String::new(),
@@ -81,6 +92,19 @@ impl DeviceDraft {
             draft.serial_enabled = true;
             draft.serial_port = serial.port.clone();
             draft.serial_baud = serial.baud.to_string();
+            if let Some(selector) = serial.selector.as_ref() {
+                draft.serial_vid = selector
+                    .vid
+                    .map(|value| format!("{value:04x}"))
+                    .unwrap_or_default();
+                draft.serial_pid = selector
+                    .pid
+                    .map(|value| format!("{value:04x}"))
+                    .unwrap_or_default();
+                draft.serial_number = selector.serial_number.clone().unwrap_or_default();
+                draft.serial_physical_location =
+                    selector.physical_location.clone().unwrap_or_default();
+            }
         }
         if let Some(jlink) = &device.jlink {
             draft.jlink_enabled = true;
@@ -151,7 +175,25 @@ impl DeviceDraft {
             if baud == 0 {
                 return Err("Serial baud must be greater than zero".into());
             }
-            Some(SerialConfig { port, baud })
+            let vid = parse_optional_usb_id(&self.serial_vid, "VID")?;
+            let pid = parse_optional_usb_id(&self.serial_pid, "PID")?;
+            let serial_number = non_empty_value(&self.serial_number);
+            let physical_location = non_empty_value(&self.serial_physical_location);
+            let selector = (vid.is_some()
+                || pid.is_some()
+                || serial_number.is_some()
+                || physical_location.is_some())
+            .then_some(SerialDeviceSelector {
+                vid,
+                pid,
+                serial_number,
+                physical_location,
+            });
+            Some(SerialConfig {
+                port,
+                baud,
+                selector,
+            })
         } else {
             None
         };
@@ -211,8 +253,18 @@ impl DeviceDraft {
         })
     }
 
-    fn select_serial_port(&mut self, path: String) {
-        self.serial_port = path;
+    fn select_serial_port(&mut self, port: &DiscoveredSerialPort) {
+        self.serial_port = port.path.clone();
+        self.serial_vid = port
+            .vid
+            .map(|value| format!("{value:04x}"))
+            .unwrap_or_default();
+        self.serial_pid = port
+            .pid
+            .map(|value| format!("{value:04x}"))
+            .unwrap_or_default();
+        self.serial_number = port.serial_number.clone().unwrap_or_default();
+        self.serial_physical_location = port.physical_location.clone().unwrap_or_default();
     }
 
     fn select_jlink_probe(&mut self, serial: String) {
@@ -240,6 +292,11 @@ impl DeviceDraft {
 
 #[function_component(DevicesPage)]
 pub fn devices_page() -> Html {
+    let host_capabilities = use_context::<CapabilityContext>().unwrap_or_default();
+    let ssh_available = host_capabilities.adapter_available("ssh");
+    let serial_available = host_capabilities.adapter_available("serial");
+    let jlink_available = host_capabilities.adapter_available("jlink");
+    let adb_available = host_capabilities.adapter_available("adb");
     let devices = use_state(|| Option::<Vec<Device>>::None);
     let page_error = use_state(|| Option::<String>::None);
     let form_error = use_state(|| Option::<String>::None);
@@ -269,23 +326,27 @@ pub fn devices_page() -> Html {
         let jlink_probes = jlink_probes.clone();
         let jlink_scan_error = jlink_scan_error.clone();
         let jlink_scan_loading = jlink_scan_loading.clone();
-        use_effect_with((), move |_| {
+        use_effect_with((serial_available, jlink_available), move |_| {
             refresh_devices(devices.clone(), page_error.clone());
-            refresh_board_profiles(
-                board_profiles.clone(),
-                board_profiles_error.clone(),
-                board_profiles_loading.clone(),
-            );
-            refresh_serial_ports(
-                serial_ports.clone(),
-                serial_scan_error.clone(),
-                serial_scan_loading.clone(),
-            );
-            refresh_jlink_probes(
-                jlink_probes.clone(),
-                jlink_scan_error.clone(),
-                jlink_scan_loading.clone(),
-            );
+            if jlink_available {
+                refresh_board_profiles(
+                    board_profiles.clone(),
+                    board_profiles_error.clone(),
+                    board_profiles_loading.clone(),
+                );
+                refresh_jlink_probes(
+                    jlink_probes.clone(),
+                    jlink_scan_error.clone(),
+                    jlink_scan_loading.clone(),
+                );
+            }
+            if serial_available {
+                refresh_serial_ports(
+                    serial_ports.clone(),
+                    serial_scan_error.clone(),
+                    serial_scan_loading.clone(),
+                );
+            }
             || {}
         });
     }
@@ -374,14 +435,49 @@ pub fn devices_page() -> Html {
             update_draft(&draft, move |next| next.serial_baud = value);
         })
     };
+    let on_serial_vid_input = {
+        let draft = draft.clone();
+        Callback::from(move |event: InputEvent| {
+            let value = event.target_unchecked_into::<HtmlInputElement>().value();
+            update_draft(&draft, move |next| next.serial_vid = value);
+        })
+    };
+    let on_serial_pid_input = {
+        let draft = draft.clone();
+        Callback::from(move |event: InputEvent| {
+            let value = event.target_unchecked_into::<HtmlInputElement>().value();
+            update_draft(&draft, move |next| next.serial_pid = value);
+        })
+    };
+    let on_serial_number_input = {
+        let draft = draft.clone();
+        Callback::from(move |event: InputEvent| {
+            let value = event.target_unchecked_into::<HtmlInputElement>().value();
+            update_draft(&draft, move |next| next.serial_number = value);
+        })
+    };
+    let on_serial_location_input = {
+        let draft = draft.clone();
+        Callback::from(move |event: InputEvent| {
+            let value = event.target_unchecked_into::<HtmlInputElement>().value();
+            update_draft(&draft, move |next| next.serial_physical_location = value);
+        })
+    };
     let on_serial_scan_select = {
         let draft = draft.clone();
+        let serial_ports = serial_ports.clone();
         Callback::from(move |event: Event| {
             let value = event.target_unchecked_into::<HtmlSelectElement>().value();
             if value.is_empty() {
                 return;
             }
-            update_draft(&draft, move |next| next.select_serial_port(value));
+            let selected = (*serial_ports)
+                .as_ref()
+                .and_then(|ports| ports.iter().find(|port| port.path == value))
+                .cloned();
+            if let Some(port) = selected {
+                update_draft(&draft, move |next| next.select_serial_port(&port));
+            }
         })
     };
     let on_refresh_serial_scan = {
@@ -799,8 +895,8 @@ pub fn devices_page() -> Html {
 
                     <div class="grid gap-3 dh-surface-muted rounded-[24px] p-4">
                         <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
-                            <span>{"Enable SSH"}</span>
-                            <input type="checkbox" checked={draft_value.ssh_enabled} onchange={on_ssh_enabled} disabled={is_submitting} />
+                            <span>{if ssh_available { "Enable SSH" } else { "SSH adapter unavailable" }}</span>
+                            <input type="checkbox" checked={draft_value.ssh_enabled} onchange={on_ssh_enabled} disabled={is_submitting || !ssh_available} />
                         </label>
                         {
                             if draft_value.ssh_enabled {
@@ -820,8 +916,8 @@ pub fn devices_page() -> Html {
 
                     <div class="grid gap-3 dh-surface-muted rounded-[24px] p-4">
                         <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
-                            <span>{"Enable serial"}</span>
-                            <input type="checkbox" checked={draft_value.serial_enabled} onchange={on_serial_enabled} disabled={is_submitting} />
+                            <span>{if serial_available { "Enable serial" } else { "Serial adapter unavailable" }}</span>
+                            <input type="checkbox" checked={draft_value.serial_enabled} onchange={on_serial_enabled} disabled={is_submitting || !serial_available} />
                         </label>
                         {
                             if draft_value.serial_enabled {
@@ -832,7 +928,7 @@ pub fn devices_page() -> Html {
                                             <button
                                                 class="rounded-2xl dh-button px-4 py-2 text-sm"
                                                 onclick={on_refresh_serial_scan.clone()}
-                                                disabled={is_submitting || *serial_scan_loading}
+                                                disabled={is_submitting || *serial_scan_loading || !serial_available}
                                             >
                                                 {if *serial_scan_loading { "Scanning serial..." } else { "Scan serial ports" }}
                                             </button>
@@ -868,8 +964,17 @@ pub fn devices_page() -> Html {
                                             }
                                         }
                                         <div class="grid gap-3 sm:grid-cols-2">
-                                            <input class="w-full rounded-2xl dh-input" value={draft_value.serial_port.clone()} oninput={on_serial_port_input} disabled={is_submitting} placeholder="/dev/ttyUSB0" />
+                                            <input class="w-full rounded-2xl dh-input" value={draft_value.serial_port.clone()} oninput={on_serial_port_input} disabled={is_submitting} placeholder="COM25 or /dev/ttyUSB0" />
                                             <input class="w-full rounded-2xl dh-input" value={draft_value.serial_baud.clone()} oninput={on_serial_baud_input} disabled={is_submitting} placeholder="115200" />
+                                        </div>
+                                        <div class="grid gap-2">
+                                            <span class="text-sm text-ink-muted">{"Stable USB identity (optional; populated by scan when available)"}</span>
+                                            <div class="grid gap-3 sm:grid-cols-2">
+                                                <input class="w-full rounded-2xl dh-input font-mono" value={draft_value.serial_vid.clone()} oninput={on_serial_vid_input} disabled={is_submitting} placeholder="VID, e.g. 1a86" />
+                                                <input class="w-full rounded-2xl dh-input font-mono" value={draft_value.serial_pid.clone()} oninput={on_serial_pid_input} disabled={is_submitting} placeholder="PID, e.g. 7523" />
+                                                <input class="w-full rounded-2xl dh-input font-mono" value={draft_value.serial_number.clone()} oninput={on_serial_number_input} disabled={is_submitting} placeholder="USB serial number" />
+                                                <input class="w-full rounded-2xl dh-input font-mono" value={draft_value.serial_physical_location.clone()} oninput={on_serial_location_input} disabled={is_submitting} placeholder="Physical location" />
+                                            </div>
                                         </div>
                                     </div>
                                 }
@@ -881,8 +986,8 @@ pub fn devices_page() -> Html {
 
                     <div class="grid gap-3 dh-surface-muted rounded-[24px] p-4">
                         <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
-                            <span>{"Enable J-Link"}</span>
-                            <input type="checkbox" checked={draft_value.jlink_enabled} onchange={on_jlink_enabled} disabled={is_submitting} />
+                            <span>{if jlink_available { "Enable J-Link" } else { "J-Link adapter unavailable" }}</span>
+                            <input type="checkbox" checked={draft_value.jlink_enabled} onchange={on_jlink_enabled} disabled={is_submitting || !jlink_available} />
                         </label>
                         {
                             if draft_value.jlink_enabled {
@@ -893,7 +998,7 @@ pub fn devices_page() -> Html {
                                             <button
                                                 class="rounded-2xl dh-button px-4 py-2 text-sm"
                                                 onclick={on_refresh_jlink_scan.clone()}
-                                                disabled={is_submitting || *jlink_scan_loading}
+                                                disabled={is_submitting || *jlink_scan_loading || !jlink_available}
                                             >
                                                 {if *jlink_scan_loading { "Scanning probes..." } else { "Scan J-Link probes" }}
                                             </button>
@@ -978,8 +1083,8 @@ pub fn devices_page() -> Html {
 
                     <div class="grid gap-3 dh-surface-muted rounded-[24px] p-4">
                         <label class="flex items-center justify-between gap-3 text-sm font-medium text-ink">
-                            <span>{"Enable ADB"}</span>
-                            <input type="checkbox" checked={draft_value.adb_enabled} onchange={on_adb_enabled} disabled={is_submitting} />
+                            <span>{if adb_available { "Enable ADB" } else { "ADB adapter unavailable" }}</span>
+                            <input type="checkbox" checked={draft_value.adb_enabled} onchange={on_adb_enabled} disabled={is_submitting || !adb_available} />
                         </label>
                         {
                             if draft_value.adb_enabled {
@@ -1133,10 +1238,21 @@ fn lookup_jlink_board_profile<'a>(
 }
 
 fn format_serial_port_option(port: &DiscoveredSerialPort) -> String {
-    port.label
-        .as_ref()
-        .map(|label| format!("{} ({label})", port.path))
-        .unwrap_or_else(|| port.path.clone())
+    let mut details = Vec::new();
+    if let Some(label) = port.label.as_ref() {
+        details.push(label.clone());
+    }
+    if let (Some(vid), Some(pid)) = (port.vid, port.pid) {
+        details.push(format!("{vid:04x}:{pid:04x}"));
+    }
+    if let Some(serial) = port.serial_number.as_ref() {
+        details.push(format!("SN {serial}"));
+    }
+    if details.is_empty() {
+        port.path.clone()
+    } else {
+        format!("{} ({})", port.path, details.join(" · "))
+    }
 }
 
 fn format_jlink_board_profile_option(profile: &BoardProfile) -> String {
@@ -1164,6 +1280,25 @@ fn split_args_or_default(args: &str) -> Vec<String> {
     } else {
         parsed
     }
+}
+
+fn parse_optional_usb_id(value: &str, label: &str) -> Result<Option<u16>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let digits = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    u16::from_str_radix(digits, 16)
+        .map(Some)
+        .map_err(|_| format!("Serial {label} must be a 16-bit hexadecimal value"))
+}
+
+fn non_empty_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn autofill_jlink_serial(
@@ -1261,23 +1396,37 @@ mod tests {
     fn serial_scan_selection_can_be_overridden_manually() {
         let mut draft = serial_ready_draft();
 
-        draft.select_serial_port("/dev/ttyUSB3".into());
+        draft.select_serial_port(&DiscoveredSerialPort {
+            path: "/dev/ttyUSB3".into(),
+            vid: Some(0x1a86),
+            pid: Some(0x7523),
+            serial_number: Some("CH341-A".into()),
+            ..Default::default()
+        });
         let scanned = draft.to_device().expect("serial device from scan");
+        let scanned_serial = scanned.serial.expect("serial config from scan");
+        assert_eq!(scanned_serial.port, "/dev/ttyUSB3");
         assert_eq!(
-            scanned.serial.expect("serial config from scan").port,
-            "/dev/ttyUSB3"
+            scanned_serial
+                .selector
+                .expect("stable selector")
+                .serial_number
+                .as_deref(),
+            Some("CH341-A")
         );
 
         draft.serial_port = "/tmp/manual-uart".into();
         let manual = draft
             .to_device()
             .expect("serial device from manual override");
+        let manual_serial = manual.serial.expect("serial config from manual override");
+        assert_eq!(manual_serial.port, "/tmp/manual-uart");
         assert_eq!(
-            manual
-                .serial
-                .expect("serial config from manual override")
-                .port,
-            "/tmp/manual-uart"
+            manual_serial
+                .selector
+                .expect("stable selector survives endpoint edit")
+                .vid,
+            Some(0x1a86)
         );
     }
 

@@ -1,7 +1,7 @@
+#[cfg(unix)]
+use std::collections::VecDeque;
 use std::{
-    collections::VecDeque,
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -18,16 +18,23 @@ use device_hub_server::{
 use device_hub_shared::{
     ActionRequest, ActionStartResponse, AdbConfig, Device, DeviceDetail, EventFilter, JlinkConfig,
     Job, JobArtifact, JobEvidence, JobStatus, LogCacheClearResponse, LogChannel, LogEvent,
-    LogLevel, LogSource, SerialConfig, SerialExecRequest, SerialExecResult, SshConfig,
+    LogLevel, LogSource, SshConfig,
 };
+#[cfg(unix)]
+use device_hub_shared::{SerialConfig, SerialExecRequest, SerialExecResult};
 use futures::StreamExt;
+use serde::Serialize;
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(unix)]
 use tokio_serial::SerialStream;
 
+#[cfg(unix)]
+use crate::helpers::spawn_app_with_config_job_policy_and_serial_stream_opener;
 use crate::helpers::{
     TestApp, connect_ws, recv_ws_event, spawn_app, spawn_app_with_config,
     spawn_app_with_config_and_evidence_store, spawn_app_with_config_and_job_policy,
-    spawn_app_with_config_job_policy_and_serial_stream_opener, wait_for_job_events,
+    wait_for_job_events,
 };
 
 #[derive(Clone, Default)]
@@ -87,7 +94,14 @@ impl JobEvidenceStorePort for EvidenceStoreProbe {
 }
 
 async fn spawn_evidence_probe_app(dir: &Path, probe: EvidenceStoreProbe) -> TestApp {
-    let script = make_fake_ssh(dir, "printf 'real output\\n'\nexit 0");
+    let script = make_process_fixture(
+        dir,
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "real output\n".into(),
+            ..Default::default()
+        },
+    );
     let mut config = ssh_test_config(
         script.display().to_string(),
         dir.join("id_rsa").display().to_string(),
@@ -96,15 +110,63 @@ async fn spawn_evidence_probe_app(dir: &Path, probe: EvidenceStoreProbe) -> Test
     spawn_app_with_config_and_evidence_store(config, probe).await
 }
 
-fn make_fake_ssh(dir: &Path, body: &str) -> std::path::PathBuf {
-    let script_path = dir.join("fake-ssh.sh");
-    fs::write(&script_path, format!("#!/bin/sh\nset -eu\n{body}\n")).expect("write fake ssh");
-    let mut permissions = fs::metadata(&script_path)
-        .expect("fake ssh metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script_path, permissions).expect("chmod fake ssh");
-    script_path
+#[derive(Clone, Debug, Default, Serialize)]
+struct ProcessFixture {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    stdout: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    stderr: String,
+    #[serde(skip_serializing_if = "is_zero_i32")]
+    exit_code: i32,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    delay_ms: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    expected_args: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    conditional_outputs: Vec<ConditionalFixtureOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_stdout: Option<RepeatedFixtureOutput>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    append_command_file: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ConditionalFixtureOutput {
+    arg_contains: String,
+    stdout: String,
+    stderr: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RepeatedFixtureOutput {
+    prefix: String,
+    start: usize,
+    end: usize,
+}
+
+fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+fn make_process_fixture(dir: &Path, name: &str, spec: &ProcessFixture) -> PathBuf {
+    let source = Path::new(env!("CARGO_BIN_EXE_device-hub-test-tool"));
+    let extension = source.extension().and_then(|value| value.to_str());
+    let executable_name = match extension {
+        Some(extension) => format!("{name}.{extension}"),
+        None => name.to_owned(),
+    };
+    let executable = dir.join(executable_name);
+    fs::copy(source, &executable).expect("copy process fixture executable");
+    fs::write(
+        executable.with_extension("json"),
+        serde_json::to_vec_pretty(spec).expect("serialize process fixture"),
+    )
+    .expect("write process fixture spec");
+    executable
 }
 
 #[tokio::test]
@@ -112,14 +174,17 @@ fn make_fake_ssh(dir: &Path, body: &str) -> std::path::PathBuf {
 async fn large_job_detail_performance_profile() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let artifacts_dir = tempdir.path().join("artifacts");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "i=1
-while [ \"$i\" -le 20000 ]; do
-  printf 'profile-line-%s\\n' \"$i\"
-  i=$((i + 1))
-done
-exit 0",
+        "fake-ssh",
+        &ProcessFixture {
+            repeat_stdout: Some(RepeatedFixtureOutput {
+                prefix: "profile-line-".into(),
+                start: 1,
+                end: 20_000,
+            }),
+            ..Default::default()
+        },
     );
     let mut config = ssh_test_config(
         script.display().to_string(),
@@ -279,28 +344,6 @@ async fn job_evidence_uses_bounded_event_samples() {
     assert_eq!(probe.full_reads.load(Ordering::Relaxed), 0);
 }
 
-fn make_fake_jlink(dir: &Path, body: &str) -> std::path::PathBuf {
-    let script_path = dir.join("fake-jlink.sh");
-    fs::write(&script_path, format!("#!/bin/sh\nset -eu\n{body}\n")).expect("write fake jlink");
-    let mut permissions = fs::metadata(&script_path)
-        .expect("fake jlink metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script_path, permissions).expect("chmod fake jlink");
-    script_path
-}
-
-fn make_fake_adb(dir: &Path, body: &str) -> std::path::PathBuf {
-    let script_path = dir.join("fake-adb.sh");
-    fs::write(&script_path, format!("#!/bin/sh\nset -eu\n{body}\n")).expect("write fake adb");
-    let mut permissions = fs::metadata(&script_path)
-        .expect("fake adb metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script_path, permissions).expect("chmod fake adb");
-    script_path
-}
-
 fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
     AppConfig {
         devices: vec![
@@ -337,6 +380,7 @@ fn ssh_test_config(ssh_program: String, key: String) -> AppConfig {
         jlink_program: None,
         adb_program: None,
         artifacts_dir: None,
+        adapters: Default::default(),
     }
 }
 
@@ -381,6 +425,7 @@ fn multi_ssh_test_config(ssh_program: String, key: String) -> AppConfig {
         jlink_program: None,
         adb_program: None,
         artifacts_dir: None,
+        adapters: Default::default(),
     }
 }
 
@@ -405,9 +450,11 @@ fn jlink_test_config(jlink_program: String) -> AppConfig {
         jlink_program: Some(jlink_program),
         adb_program: None,
         artifacts_dir: None,
+        adapters: Default::default(),
     }
 }
 
+#[cfg(unix)]
 fn serial_test_config() -> AppConfig {
     AppConfig {
         devices: vec![Device {
@@ -417,6 +464,7 @@ fn serial_test_config() -> AppConfig {
             serial: Some(SerialConfig {
                 port: "/dev/test-serial".into(),
                 baud: 115200,
+                selector: None,
             }),
             jlink: None,
             adb: None,
@@ -426,6 +474,7 @@ fn serial_test_config() -> AppConfig {
         jlink_program: None,
         adb_program: None,
         artifacts_dir: None,
+        adapters: Default::default(),
     }
 }
 
@@ -448,11 +497,20 @@ fn adb_test_config(adb_program: String) -> AppConfig {
         jlink_program: None,
         adb_program: Some(adb_program),
         artifacts_dir: None,
+        adapters: Default::default(),
     }
 }
 
 #[cfg(unix)]
 async fn spawn_serial_test_app(pair_count: usize) -> (crate::helpers::TestApp, Vec<SerialStream>) {
+    spawn_serial_test_app_with_reconnect_delay(pair_count, 100).await
+}
+
+#[cfg(unix)]
+async fn spawn_serial_test_app_with_reconnect_delay(
+    pair_count: usize,
+    reconnect_delay_ms: u64,
+) -> (crate::helpers::TestApp, Vec<SerialStream>) {
     let mut masters = VecDeque::new();
     let mut slaves = Vec::with_capacity(pair_count);
     for _ in 0..pair_count {
@@ -462,8 +520,11 @@ async fn spawn_serial_test_app(pair_count: usize) -> (crate::helpers::TestApp, V
     }
     let masters = Arc::new(std::sync::Mutex::new(masters));
     let opener_masters = masters.clone();
+    let mut config = serial_test_config();
+    config.adapters.serial_reconnect.initial_delay_ms = reconnect_delay_ms;
+    config.adapters.serial_reconnect.max_delay_ms = reconnect_delay_ms;
     let app = spawn_app_with_config_job_policy_and_serial_stream_opener(
-        serial_test_config(),
+        config,
         JobPolicyProvider::default(),
         4096,
         move |_| {
@@ -500,20 +561,38 @@ async fn device_detail_exposes_active_serial_tail_runtime() {
         .expect("invalid serial tail job json");
     let running = app.wait_for_job_status(&tail.id, JobStatus::Running).await;
 
-    let response = app
-        .api_client
-        .get(app.endpoint("/api/devices/board-alpha"))
-        .send()
-        .await
-        .expect("failed to get device detail");
-
-    assert!(response.status().is_success());
-    let detail: DeviceDetail = response.json().await.expect("invalid device detail json");
+    let mut detail_with_endpoint = None;
+    for _ in 0..100 {
+        let response = app
+            .api_client
+            .get(app.endpoint("/api/devices/board-alpha"))
+            .send()
+            .await
+            .expect("failed to get device detail");
+        assert!(response.status().is_success());
+        let detail: DeviceDetail = response.json().await.expect("invalid device detail json");
+        if detail
+            .runtime
+            .active_tails
+            .first()
+            .and_then(|tail| tail.current_endpoint.as_deref())
+            .is_some()
+        {
+            detail_with_endpoint = Some(detail);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let detail = detail_with_endpoint.expect("serial endpoint was not published to runtime detail");
     assert_eq!(detail.runtime.active_tails.len(), 1);
     let active_tail = &detail.runtime.active_tails[0];
     assert_eq!(active_tail.action, "serial.tail");
     assert_eq!(active_tail.job_id, running.id);
     assert_eq!(active_tail.active_since, running.created_at);
+    assert_eq!(
+        active_tail.current_endpoint.as_deref(),
+        Some("/dev/test-serial")
+    );
 
     cancel_job_if_running(&app, &running.id).await;
 }
@@ -550,17 +629,20 @@ async fn serial_tail_reuse_returns_active_job_without_opening_the_port_again() {
 #[tokio::test]
 async fn adb_logcat_streams_device_output() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let adb = make_fake_adb(
+    let adb = make_process_fixture(
         tempdir.path(),
-        r#"
-test "$1" = "-s"
-test "$2" = "08211FDD4002KE"
-test "$3" = "logcat"
-test "$4" = "-v"
-test "$5" = "time"
-echo "06-03 10:00:00.000  123  456 I ActivityManager: boot complete"
-echo "06-03 10:00:00.100  123  456 W DeviceHub: sample warning"
-"#,
+        "fake-adb",
+        &ProcessFixture {
+            stdout: concat!(
+                "06-03 10:00:00.000  123  456 I ActivityManager: boot complete\n",
+                "06-03 10:00:00.100  123  456 W DeviceHub: sample warning\n"
+            )
+            .into(),
+            expected_args: ["-s", "08211FDD4002KE", "logcat", "-v", "time"]
+                .map(str::to_owned)
+                .into(),
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(adb_test_config(adb.display().to_string())).await;
 
@@ -590,12 +672,14 @@ echo "06-03 10:00:00.100  123  456 W DeviceHub: sample warning"
 #[tokio::test]
 async fn device_detail_exposes_active_adb_logcat_runtime_and_reuse_returns_it() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let adb = make_fake_adb(
+    let adb = make_process_fixture(
         tempdir.path(),
-        r#"
-echo "06-03 10:00:00.000  123  456 I DeviceHub: logcat active"
-sleep 5
-"#,
+        "fake-adb",
+        &ProcessFixture {
+            stdout: "06-03 10:00:00.000  123  456 I DeviceHub: logcat active\n".into(),
+            delay_ms: 5_000,
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(adb_test_config(adb.display().to_string())).await;
 
@@ -650,9 +734,13 @@ async fn get_job_returns_404_for_unknown_job() {
 #[tokio::test]
 async fn list_jobs_can_filter_by_device() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "case \"$*\" in *192.168.1.100*) sleep 5 ;; *192.168.1.102*) sleep 5 ;; esac",
+        "fake-ssh",
+        &ProcessFixture {
+            delay_ms: 5_000,
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(multi_ssh_test_config(
         script.display().to_string(),
@@ -705,9 +793,14 @@ async fn list_jobs_can_filter_by_device() {
 #[tokio::test]
 async fn get_job_eventually_returns_a_succeeded_job() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'kernel booted\\nready\\n'\nprintf 'minor warning\\n' >&2\nexit 0",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "kernel booted\nready\n".into(),
+            stderr: "minor warning\n".into(),
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
@@ -747,9 +840,15 @@ async fn get_job_eventually_returns_a_succeeded_job() {
 #[tokio::test]
 async fn get_job_eventually_returns_a_failed_job_for_non_zero_ssh_exit() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'partial output\\n'\nprintf 'permission denied\\n' >&2\nexit 7",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "partial output\n".into(),
+            stderr: "permission denied\n".into(),
+            exit_code: 7,
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
@@ -820,6 +919,145 @@ async fn serial_tail_streams_device_output() {
         tail_events
             .iter()
             .any(|event| event.message.starts_with("boot ok"))
+    );
+
+    cancel_job_if_running(&app, &tail.id).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serial_tail_reconnects_after_eof_and_continues_the_same_job() {
+    let (app, mut slaves) = spawn_serial_test_app_with_reconnect_delay(2, 500).await;
+    let mut second_slave = slaves.pop().expect("missing second serial slave");
+    let mut first_slave = slaves.pop().expect("missing first serial slave");
+
+    let tail: Job = app
+        .post_action("board-alpha", "serial.tail", None)
+        .await
+        .json()
+        .await
+        .expect("invalid serial tail job json");
+    app.wait_for_job_status(&tail.id, JobStatus::Running).await;
+
+    let mut connected = false;
+    for _ in 0..100 {
+        let events: Vec<LogEvent> = app
+            .get_job_events(&tail.id)
+            .await
+            .json()
+            .await
+            .expect("serial tail connection events");
+        connected = events
+            .iter()
+            .any(|event| event.message.contains("serial connected"));
+        if connected {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(connected, "serial tail did not establish its first session");
+
+    first_slave
+        .write_all(b"before disconnect\n")
+        .await
+        .expect("write first serial output");
+    drop(first_slave);
+
+    let mut disconnected = false;
+    for _ in 0..250 {
+        let events: Vec<LogEvent> = app
+            .get_job_events(&tail.id)
+            .await
+            .json()
+            .await
+            .expect("serial tail disconnect events");
+        disconnected = events
+            .iter()
+            .any(|event| event.message.contains("serial disconnected"));
+        if disconnected {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        disconnected,
+        "serial tail did not observe EOF from its first session"
+    );
+    let disconnected_detail: DeviceDetail = app
+        .api_client
+        .get(app.endpoint("/api/devices/board-alpha"))
+        .send()
+        .await
+        .expect("disconnected device detail")
+        .json()
+        .await
+        .expect("disconnected device detail json");
+    let disconnected_tail = disconnected_detail
+        .runtime
+        .active_tails
+        .iter()
+        .find(|active| active.job_id == tail.id)
+        .expect("tail remains active while disconnected");
+    assert_eq!(disconnected_tail.current_endpoint, None);
+
+    second_slave
+        .write_all(b"after reconnect\n")
+        .await
+        .expect("write second serial output");
+
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        events = app
+            .get_job_events(&tail.id)
+            .await
+            .json()
+            .await
+            .expect("serial tail events");
+        let has_disconnected = events
+            .iter()
+            .any(|event: &LogEvent| event.message.contains("serial disconnected"));
+        let has_reconnected = events
+            .iter()
+            .any(|event: &LogEvent| event.message.contains("serial reconnected"));
+        let has_reconnected_output = events
+            .iter()
+            .any(|event: &LogEvent| event.message.contains("after reconnect"));
+        if has_disconnected && has_reconnected && has_reconnected_output {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message.contains("serial disconnected"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message.contains("serial reconnected"))
+    );
+    assert!(events.iter().any(|event| {
+        event.message.contains("serial reconnecting: attempt 1/")
+            && event.message.contains("previous_endpoint=/dev/test-serial")
+    }));
+    assert!(events.iter().any(|event| {
+        event.message.contains("outage_ms=") && event.message.contains("total_disconnected_ms=")
+    }));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.message.contains("after reconnect"))
+    );
+    assert_eq!(
+        app.get_job(&tail.id)
+            .await
+            .json::<Job>()
+            .await
+            .expect("tail job")
+            .status,
+        JobStatus::Running
     );
 
     cancel_job_if_running(&app, &tail.id).await;
@@ -1196,7 +1434,14 @@ async fn serial_tail_releases_session_after_cancel() {
 #[tokio::test]
 async fn jlink_flash_requires_a_firmware_path_payload() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_jlink(tempdir.path(), "printf 'unused\\n'");
+    let script = make_process_fixture(
+        tempdir.path(),
+        "fake-jlink",
+        &ProcessFixture {
+            stdout: "unused\n".into(),
+            ..Default::default()
+        },
+    );
     let app = spawn_app_with_config(jlink_test_config(script.display().to_string())).await;
 
     let response = app.post_action("board-zeta", "jlink.flash", None).await;
@@ -1213,9 +1458,14 @@ async fn jlink_flash_requires_a_firmware_path_payload() {
 async fn jlink_probe_persists_structured_result_and_artifacts() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let artifacts_dir = tempdir.path().join("artifacts");
-    let script = make_fake_jlink(
+    let script = make_process_fixture(
         tempdir.path(),
-        "script=\"\"\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = \"-CommandFile\" ]; then script=$2; shift 2; else shift; fi; done\nprintf 'probe header\\n'\ncat \"$script\"",
+        "fake-jlink",
+        &ProcessFixture {
+            stdout: "probe header\n".into(),
+            append_command_file: true,
+            ..Default::default()
+        },
     );
     let mut config = jlink_test_config(script.display().to_string());
     config.artifacts_dir = Some(artifacts_dir.display().to_string());
@@ -1286,9 +1536,15 @@ async fn jlink_probe_persists_structured_result_and_artifacts() {
 async fn jlink_reset_failure_still_persists_jlink_logs() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let artifacts_dir = tempdir.path().join("artifacts");
-    let script = make_fake_jlink(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'reset start\\n'\nprintf 'dap failed\\n' >&2\nexit 1",
+        "fake-jlink",
+        &ProcessFixture {
+            stdout: "reset start\n".into(),
+            stderr: "dap failed\n".into(),
+            exit_code: 1,
+            ..Default::default()
+        },
     );
     let mut config = jlink_test_config(script.display().to_string());
     config.artifacts_dir = Some(artifacts_dir.display().to_string());
@@ -1344,7 +1600,14 @@ async fn jlink_reset_failure_still_persists_jlink_logs() {
 async fn jlink_reset_times_out_and_persists_timeout_evidence() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let artifacts_dir = tempdir.path().join("artifacts");
-    let script = make_fake_jlink(tempdir.path(), "sleep 1");
+    let script = make_process_fixture(
+        tempdir.path(),
+        "fake-jlink",
+        &ProcessFixture {
+            delay_ms: 1_000,
+            ..Default::default()
+        },
+    );
     let policy_provider = JobPolicyProvider::new(|action| match action {
         "jlink.reset" => ActionPolicy::new(
             std::time::Duration::from_millis(150),
@@ -1420,9 +1683,15 @@ async fn jlink_reset_times_out_and_persists_timeout_evidence() {
 #[tokio::test]
 async fn cancelled_job_keeps_all_events_accepted_before_cancellation() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'boot log line\n'\nprintf 'tail warning\n' >&2\nsleep 5",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "boot log line\n".into(),
+            stderr: "tail warning\n".into(),
+            delay_ms: 5_000,
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
@@ -1494,9 +1763,15 @@ async fn cancelled_job_keeps_all_events_accepted_before_cancellation() {
 #[tokio::test]
 async fn ssh_tail_without_payload_uses_device_default_log_path() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'boot log line\n'\nprintf 'tail warning\n' >&2\nsleep 5",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "boot log line\n".into(),
+            stderr: "tail warning\n".into(),
+            delay_ms: 5_000,
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
@@ -1525,9 +1800,15 @@ async fn ssh_tail_without_payload_uses_device_default_log_path() {
 #[tokio::test]
 async fn ssh_tail_streams_live_events_over_websocket() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'boot log line\n'\nprintf 'tail warning\n' >&2\nsleep 5",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "boot log line\n".into(),
+            stderr: "tail warning\n".into(),
+            delay_ms: 5_000,
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
@@ -1578,9 +1859,25 @@ async fn ssh_tail_streams_live_events_over_websocket() {
 #[tokio::test]
 async fn websocket_device_filter_only_streams_matching_device_events() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "case \"$*\" in *192.168.1.100*) printf 'alpha boot\n'; printf 'alpha warn\n' >&2 ;; *192.168.1.102*) printf 'mixed boot\n'; printf 'mixed warn\n' >&2 ;; esac\nsleep 5",
+        "fake-ssh",
+        &ProcessFixture {
+            delay_ms: 5_000,
+            conditional_outputs: vec![
+                ConditionalFixtureOutput {
+                    arg_contains: "192.168.1.100".into(),
+                    stdout: "alpha boot\n".into(),
+                    stderr: "alpha warn\n".into(),
+                },
+                ConditionalFixtureOutput {
+                    arg_contains: "192.168.1.102".into(),
+                    stdout: "mixed boot\n".into(),
+                    stderr: "mixed warn\n".into(),
+                },
+            ],
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(multi_ssh_test_config(
         script.display().to_string(),
@@ -1638,9 +1935,25 @@ async fn websocket_device_filter_only_streams_matching_device_events() {
 #[tokio::test]
 async fn websocket_source_and_search_filters_only_stream_matching_events() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "case \"$*\" in *192.168.1.100*) printf 'alpha boot\n'; printf 'alpha warn\n' >&2 ;; *192.168.1.102*) printf 'mixed boot\n'; printf 'mixed warn\n' >&2 ;; esac\nsleep 5",
+        "fake-ssh",
+        &ProcessFixture {
+            delay_ms: 5_000,
+            conditional_outputs: vec![
+                ConditionalFixtureOutput {
+                    arg_contains: "192.168.1.100".into(),
+                    stdout: "alpha boot\n".into(),
+                    stderr: "alpha warn\n".into(),
+                },
+                ConditionalFixtureOutput {
+                    arg_contains: "192.168.1.102".into(),
+                    stdout: "mixed boot\n".into(),
+                    stderr: "mixed warn\n".into(),
+                },
+            ],
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(multi_ssh_test_config(
         script.display().to_string(),
@@ -1681,9 +1994,14 @@ async fn websocket_source_and_search_filters_only_stream_matching_events() {
 #[tokio::test]
 async fn websocket_since_replays_only_newer_job_events() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'line one\nline two\n'\nprintf 'warn one\n' >&2\nexit 0",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "line one\nline two\n".into(),
+            stderr: "warn one\n".into(),
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
@@ -1737,9 +2055,13 @@ async fn websocket_since_replays_only_newer_job_events() {
 #[tokio::test]
 async fn clear_event_cache_drops_only_in_memory_replay_events() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'cache line one\ncache line two\n'\nexit 0",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "cache line one\ncache line two\n".into(),
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
@@ -1800,9 +2122,24 @@ async fn clear_event_cache_drops_only_in_memory_replay_events() {
 #[tokio::test]
 async fn get_events_filters_current_cache_by_multiple_devices_search_any_and_relative_since() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "case \"$*\" in *192.168.1.100*) printf 'factory_reset start\nKEY_UNBIND fired\nalpha noise\n' ;; *192.168.1.102*) printf 'camera reset ignored\nmixed noise\n' ;; esac\nexit 0",
+        "fake-ssh",
+        &ProcessFixture {
+            conditional_outputs: vec![
+                ConditionalFixtureOutput {
+                    arg_contains: "192.168.1.100".into(),
+                    stdout: "factory_reset start\nKEY_UNBIND fired\nalpha noise\n".into(),
+                    stderr: String::new(),
+                },
+                ConditionalFixtureOutput {
+                    arg_contains: "192.168.1.102".into(),
+                    stdout: "camera reset ignored\nmixed noise\n".into(),
+                    stderr: String::new(),
+                },
+            ],
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(multi_ssh_test_config(
         script.display().to_string(),
@@ -1877,9 +2214,13 @@ async fn get_events_filters_current_cache_by_multiple_devices_search_any_and_rel
 #[tokio::test]
 async fn get_events_filters_with_rfc3339_since_and_regex() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'before reset\nfactory_reset start\nfactory_reset end\n'\nexit 0",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "before reset\nfactory_reset start\nfactory_reset end\n".into(),
+            ..Default::default()
+        },
     );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
@@ -1944,7 +2285,14 @@ async fn get_events_rejects_invalid_regex() {
 #[tokio::test]
 async fn cancel_job_marks_running_job_as_cancelled() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(tempdir.path(), "sleep 5");
+    let script = make_process_fixture(
+        tempdir.path(),
+        "fake-ssh",
+        &ProcessFixture {
+            delay_ms: 5_000,
+            ..Default::default()
+        },
+    );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
         tempdir.path().join("id_rsa").display().to_string(),
@@ -1987,7 +2335,14 @@ async fn cancel_job_marks_running_job_as_cancelled() {
 #[tokio::test]
 async fn start_action_returns_409_when_device_is_locked_by_running_job() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(tempdir.path(), "sleep 5");
+    let script = make_process_fixture(
+        tempdir.path(),
+        "fake-ssh",
+        &ProcessFixture {
+            delay_ms: 5_000,
+            ..Default::default()
+        },
+    );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
         tempdir.path().join("id_rsa").display().to_string(),
@@ -2031,7 +2386,7 @@ async fn start_action_returns_409_when_device_is_locked_by_running_job() {
 #[tokio::test]
 async fn cancel_job_rejects_completed_jobs_without_mutating_status() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(tempdir.path(), "exit 0");
+    let script = make_process_fixture(tempdir.path(), "fake-ssh", &ProcessFixture::default());
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
         tempdir.path().join("id_rsa").display().to_string(),
@@ -2086,14 +2441,17 @@ async fn cancel_job_returns_404_for_unknown_job() {
 async fn completed_jobs_persist_job_metadata_and_full_event_history_to_disk() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let artifacts_dir = tempdir.path().join("artifacts");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "i=1
-while [ \"$i\" -le 1105 ]; do
-  printf 'line-%s\\n' \"$i\"
-  i=$((i + 1))
-done
-exit 0",
+        "fake-ssh",
+        &ProcessFixture {
+            repeat_stdout: Some(RepeatedFixtureOutput {
+                prefix: "line-".into(),
+                start: 1,
+                end: 1_105,
+            }),
+            ..Default::default()
+        },
     );
     let mut config = ssh_test_config(
         script.display().to_string(),
@@ -2174,9 +2532,15 @@ exit 0",
 async fn get_job_evidence_returns_summary_and_downloadable_artifacts() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let artifacts_dir = tempdir.path().join("artifacts");
-    let script = make_fake_ssh(
+    let script = make_process_fixture(
         tempdir.path(),
-        "printf 'boot ok\\n'\nprintf 'crc mismatch\\n' >&2\nexit 7",
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "boot ok\n".into(),
+            stderr: "crc mismatch\n".into(),
+            exit_code: 7,
+            ..Default::default()
+        },
     );
     let mut config = ssh_test_config(
         script.display().to_string(),
@@ -2265,7 +2629,14 @@ async fn get_job_evidence_returns_summary_and_downloadable_artifacts() {
 async fn job_evidence_uses_persisted_summary_without_reading_event_history() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let artifacts_dir = tempdir.path().join("artifacts");
-    let script = make_fake_ssh(tempdir.path(), "printf 'one\\ntwo\\n'\nexit 0");
+    let script = make_process_fixture(
+        tempdir.path(),
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "one\ntwo\n".into(),
+            ..Default::default()
+        },
+    );
     let mut config = ssh_test_config(
         script.display().to_string(),
         tempdir.path().join("id_rsa").display().to_string(),
@@ -2306,7 +2677,14 @@ async fn job_evidence_uses_persisted_summary_without_reading_event_history() {
 #[tokio::test]
 async fn rerun_job_reuses_previous_action_payload_and_device() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(tempdir.path(), "printf 'rerun ready\\n'\nexit 0");
+    let script = make_process_fixture(
+        tempdir.path(),
+        "fake-ssh",
+        &ProcessFixture {
+            stdout: "rerun ready\n".into(),
+            ..Default::default()
+        },
+    );
     let app = spawn_app_with_config(ssh_test_config(
         script.display().to_string(),
         tempdir.path().join("id_rsa").display().to_string(),
@@ -2345,7 +2723,14 @@ async fn rerun_job_reuses_previous_action_payload_and_device() {
 #[tokio::test]
 async fn ssh_exec_times_out_and_records_timeout_policy_events() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let script = make_fake_ssh(tempdir.path(), "sleep 1");
+    let script = make_process_fixture(
+        tempdir.path(),
+        "fake-ssh",
+        &ProcessFixture {
+            delay_ms: 1_000,
+            ..Default::default()
+        },
+    );
     let policy_provider = JobPolicyProvider::new(|action| match action {
         "ssh.exec" => ActionPolicy::new(
             std::time::Duration::from_millis(150),

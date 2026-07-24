@@ -1,9 +1,24 @@
+use device_hub_shared::CapabilitySnapshot;
 use yew::prelude::*;
 use yew_router::prelude::*;
 
-use crate::{components::frame::Frame, pages};
+use crate::{api, components::frame::Frame, pages};
 
 const THEME_STORAGE_KEY: &str = "deviceHubTheme";
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CapabilityContext {
+    pub snapshot: Option<CapabilitySnapshot>,
+}
+
+impl CapabilityContext {
+    pub fn adapter_available(&self, adapter_id: &str) -> bool {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.adapter(adapter_id))
+            .is_some_and(|capability| capability.available)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ThemeMode {
@@ -84,6 +99,7 @@ fn switch(route: Route) -> Html {
 #[function_component(App)]
 pub fn app() -> Html {
     let theme = use_state(load_initial_theme);
+    let capabilities = use_state(CapabilityContext::default);
 
     {
         let active_theme = *theme;
@@ -98,12 +114,28 @@ pub fn app() -> Html {
         Callback::from(move |_| theme.set(theme.next()))
     };
 
+    {
+        let capabilities = capabilities.clone();
+        use_effect_with((), move |_| {
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(snapshot) = api::list_capabilities().await {
+                    capabilities.set(CapabilityContext {
+                        snapshot: Some(snapshot),
+                    });
+                }
+            });
+            || {}
+        });
+    }
+
     html! {
-        <BrowserRouter>
-            <Frame theme_label={theme.label()} {on_toggle_theme}>
-                <Switch<Route> render={switch} />
-            </Frame>
-        </BrowserRouter>
+        <ContextProvider<CapabilityContext> context={(*capabilities).clone()}>
+            <BrowserRouter>
+                <Frame theme_label={theme.label()} {on_toggle_theme}>
+                    <Switch<Route> render={switch} />
+                </Frame>
+            </BrowserRouter>
+        </ContextProvider<CapabilityContext>>
     }
 }
 
@@ -125,5 +157,42 @@ fn apply_theme(theme: ThemeMode) {
         if let Ok(Some(storage)) = window.local_storage() {
             let _ = storage.set_item(THEME_STORAGE_KEY, theme.as_str());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use device_hub_shared::{AdapterCapability, CapabilitySnapshot};
+
+    use super::CapabilityContext;
+
+    #[test]
+    fn capability_context_only_enables_available_adapters() {
+        let context = CapabilityContext {
+            snapshot: Some(CapabilitySnapshot {
+                adapters: vec![
+                    AdapterCapability {
+                        adapter_id: "serial".into(),
+                        compiled: true,
+                        enabled: true,
+                        available: true,
+                        actions: vec!["serial.tail".into()],
+                        unavailable_reason: None,
+                    },
+                    AdapterCapability {
+                        adapter_id: "ssh".into(),
+                        compiled: false,
+                        enabled: false,
+                        available: false,
+                        actions: vec!["ssh.exec".into()],
+                        unavailable_reason: Some("not_compiled".into()),
+                    },
+                ],
+            }),
+        };
+
+        assert!(context.adapter_available("serial"));
+        assert!(!context.adapter_available("ssh"));
+        assert!(!context.adapter_available("jlink"));
     }
 }

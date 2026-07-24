@@ -46,8 +46,8 @@ Current `server/` layering follows a lightweight hexagonal split:
 - `use_cases.rs` owns application actions such as start, cancel, and rerun.
 - `services/job_manager.rs` owns job lifecycle orchestration, locking, and timeout policy.
 - `ports.rs` defines outbound abstractions that the core depends on.
-- `services/adapter_action_runner.rs` is a driven adapter that implements the action-running port using SSH, serial, and J-Link crates.
-- `app.rs` is the composition root that wires concrete adapters into ports.
+- `services/adapter_action_runner.rs` owns the capability registry and per-adapter driven handlers. The registry only maps action IDs to handlers; it does not hold a fixed set of concrete adapters or a central cross-adapter dispatch match.
+- `app.rs` is the composition root that selects optional adapter Cargo features, applies runtime enablement, and registers concrete handlers behind ports.
 
 ### `shared/`
 
@@ -69,6 +69,7 @@ Example types:
 - Encapsulates external tool and protocol integration.
 - Keeps transport-specific behavior out of API handlers.
 - Concrete adapter crates should be referenced from the composition root or driven-adapter layer, not from use cases or job lifecycle orchestration.
+- Adapter crates are optional `server` dependencies. The default profile is serial-only; `ssh`, `jlink`, `adb`, and `full` are opt-in feature profiles.
 
 First adapters:
 
@@ -128,10 +129,21 @@ Recommended first screens:
 
 Devices are declared in a YAML file loaded at startup. Changing the file requires a server restart; live reload is intentionally unsupported to avoid inconsistency while jobs are running.
 
-`ssh`, `serial`, and `jlink` are independent, optional capabilities. A device may have any combination depending on its role:
+`ssh`, `serial`, `jlink`, and `adb` are independent, optional capabilities at two levels:
+
+- the server binary must contain the matching Cargo feature;
+- runtime adapter configuration must enable it.
+
+`GET /api/capabilities` is the authoritative compiled/enabled/available snapshot used by the API and UI. Device connection blocks then determine which available actions a specific device can use.
 
 ```yaml
 # devices.yaml
+adapters:
+  serial: true
+  ssh: false
+  jlink: false
+  adb: false
+
 devices:
   - id: board-01
     label: "Linux Board"        # SSH only — runs an OS
@@ -145,6 +157,10 @@ devices:
     serial:
       port: /dev/ttyUSB0
       baud: 115200
+      selector:
+        vid: 6790
+        pid: 29987
+        serial_number: CH341-A
     jlink:
       serial: "123456789"
       device: STM32H743
@@ -187,6 +203,10 @@ Sensitive fields (passwords, key paths) support `$ENV_VAR` substitution to avoid
 - Execution progress and logs flow through a unified event stream.
 - Jobs are cancelled via `DELETE /api/jobs/{job_id}`; the server signals the adapter to stop and transitions the job to `cancelled`.
 - Job lifecycle rules live in the core job manager; concrete device execution is delegated through an outbound port.
+- `serial.tail` treats unexpected EOF and recoverable I/O/open failures as disconnects, emits observable reconnect events, re-resolves stable USB identity, and keeps the same job active until cancellation or configured retry exhaustion.
+- While a serial tail is connected, device runtime status exposes the resolved `current_endpoint`; disconnect and terminal job transitions clear it. The UI distinguishes inactive configuration, the endpoint actually opened by a running job, and an active tail that is waiting for reconnection.
+- Windows serial discovery supplements VID/PID/serial metadata with the SetupAPI physical location path so same-model adapters with duplicate serial numbers remain distinguishable.
+- On Windows, an active serial tail can hold a system-required execution request on a dedicated thread so idle Modern Standby does not suspend monitoring; explicit user-initiated sleep still requires reconnect recovery.
 
 Job states:
 
@@ -241,6 +261,7 @@ Primary sources:
 ```text
 GET    /api/devices
 GET    /api/devices/{device_id}
+GET    /api/capabilities
 
 POST   /api/devices/{device_id}/actions/ssh.exec
 POST   /api/devices/{device_id}/actions/ssh.tail
