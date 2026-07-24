@@ -142,7 +142,7 @@ fn persist_registry(state: &DeviceRegistryState) -> Result<(), DeviceRegistryErr
 
 #[cfg(test)]
 mod tests {
-    use device_hub_shared::{JlinkConfig, SerialConfig, SshConfig};
+    use device_hub_shared::{JlinkConfig, SerialConfig, SerialDeviceSelector, SshConfig};
 
     use super::*;
 
@@ -159,6 +159,12 @@ mod tests {
             serial: Some(SerialConfig {
                 port: "/dev/ttyUSB0".into(),
                 baud: 115200,
+                selector: Some(SerialDeviceSelector {
+                    vid: Some(0x1a86),
+                    pid: Some(0x7523),
+                    serial_number: Some("CH341-A".into()),
+                    physical_location: None,
+                }),
             }),
             jlink: Some(JlinkConfig {
                 serial: "123456789".into(),
@@ -186,6 +192,7 @@ mod tests {
                 serial: Some(SerialConfig {
                     port: "/dev/ttyUSB1".into(),
                     baud: 9600,
+                    selector: None,
                 }),
                 jlink: None,
                 adb: None,
@@ -197,6 +204,14 @@ mod tests {
         assert_eq!(devices.len(), 2);
         assert_eq!(devices[0].id, "board-alpha");
         assert_eq!(devices[1].id, "board-beta");
+        assert_eq!(
+            devices[0]
+                .serial
+                .as_ref()
+                .and_then(|serial| serial.selector.as_ref())
+                .and_then(|selector| selector.serial_number.as_deref()),
+            Some("CH341-A")
+        );
     }
 
     #[test]

@@ -12,6 +12,10 @@ backend = "http://127.0.0.1:3000/api/devices"
 rewrite = "/api/devices"
 
 [[proxy]]
+backend = "http://127.0.0.1:3000/api/capabilities"
+rewrite = "/api/capabilities"
+
+[[proxy]]
 backend = "http://127.0.0.1:3000/api/board-profiles"
 rewrite = "/api/board-profiles"
 

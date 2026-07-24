@@ -20,6 +20,8 @@ pub enum AppError {
     Conflict(String),
     #[error("conflict: job is already {0}")]
     JobNotCancellable(String),
+    #[error("capability unavailable: {0}")]
+    CapabilityUnavailable(String),
     #[error("internal server error: {0}")]
     Internal(String),
 }
@@ -39,6 +41,7 @@ impl IntoResponse for AppError {
             Self::DeviceLocked { .. } | Self::Conflict(_) | Self::JobNotCancellable(_) => {
                 StatusCode::CONFLICT
             }
+            Self::CapabilityUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

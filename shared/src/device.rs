@@ -36,12 +36,22 @@ pub struct ActiveTailStatus {
     pub action: String,
     pub job_id: String,
     pub active_since: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_endpoint: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiscoveredSerialPort {
     pub path: String,
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vid: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_location: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +73,20 @@ pub struct SshConfig {
 pub struct SerialConfig {
     pub port: String,
     pub baud: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<SerialDeviceSelector>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SerialDeviceSelector {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vid: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_location: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,5 +165,28 @@ mod tests {
         .expect("ssh config json");
 
         assert_eq!(config.default_log_path, "/tmp/sdcard/debug_log");
+    }
+
+    #[test]
+    fn serial_config_without_selector_remains_backward_compatible() {
+        let config: SerialConfig =
+            serde_json::from_str(r#"{"port":"COM25","baud":115200}"#).expect("serial config");
+
+        assert_eq!(config.port, "COM25");
+        assert_eq!(config.selector, None);
+    }
+
+    #[test]
+    fn discovered_serial_port_omits_unknown_usb_metadata() {
+        let port = DiscoveredSerialPort {
+            path: "/dev/ttyS0".into(),
+            label: None,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            serde_json::to_value(port).expect("serialize port"),
+            serde_json::json!({"path":"/dev/ttyS0","label":null})
+        );
     }
 }

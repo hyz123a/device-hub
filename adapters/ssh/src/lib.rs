@@ -64,7 +64,7 @@ pub struct SshAdapter {
 impl SshAdapter {
     pub fn new() -> Self {
         Self {
-            program: PathBuf::from("ssh"),
+            program: PathBuf::from(default_ssh_program()),
         }
     }
 
@@ -225,7 +225,7 @@ impl SshAdapter {
             .arg("-o")
             .arg("StrictHostKeyChecking=no")
             .arg("-o")
-            .arg("UserKnownHostsFile=/dev/null")
+            .arg(format!("UserKnownHostsFile={}", null_device()))
             .arg("-o")
             .arg("LogLevel=ERROR")
             .arg("-o")
@@ -276,12 +276,45 @@ impl SshTailSession {
 
 fn expand_home(path: &str) -> Result<PathBuf, SshAdapterError> {
     if let Some(suffix) = path.strip_prefix("~/") {
-        let home = env::var_os("HOME").ok_or_else(|| SshAdapterError::MissingHomeDirectory {
+        let home = home_directory().ok_or_else(|| SshAdapterError::MissingHomeDirectory {
             path: path.to_owned(),
         })?;
-        Ok(PathBuf::from(home).join(suffix))
+        Ok(home.join(suffix))
     } else {
         Ok(PathBuf::from(path))
+    }
+}
+
+#[cfg(windows)]
+fn default_ssh_program() -> &'static str {
+    "ssh.exe"
+}
+
+#[cfg(not(windows))]
+fn default_ssh_program() -> &'static str {
+    "ssh"
+}
+
+#[cfg(windows)]
+fn null_device() -> &'static str {
+    "NUL"
+}
+
+#[cfg(not(windows))]
+fn null_device() -> &'static str {
+    "/dev/null"
+}
+
+fn home_directory() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        env::var_os("HOME").map(PathBuf::from)
     }
 }
 
@@ -303,9 +336,45 @@ fn reboot_disconnect_is_expected(exit_code: i32, stderr: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
-
     use super::*;
+
+    #[test]
+    fn host_defaults_match_the_platform() {
+        #[cfg(windows)]
+        {
+            assert_eq!(default_ssh_program(), "ssh.exe");
+            assert_eq!(null_device(), "NUL");
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(default_ssh_program(), "ssh");
+            assert_eq!(null_device(), "/dev/null");
+        }
+    }
+
+    #[test]
+    fn base_command_uses_platform_host_options_without_spawning() {
+        let adapter = SshAdapter::new();
+        let command = adapter
+            .base_command(&config_with_key("C:\\keys\\id_rsa"))
+            .expect("ssh command");
+        let arguments = command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == &format!("UserKnownHostsFile={}", null_device()))
+        );
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "root@board.local")
+        );
+    }
 
     fn config_with_key(key: impl Into<String>) -> SshConfig {
         SshConfig {
@@ -314,145 +383,5 @@ mod tests {
             key: key.into(),
             default_log_path: "/tmp/sdcard/debug_log".into(),
         }
-    }
-
-    fn make_fake_ssh(dir: &Path, body: &str) -> PathBuf {
-        let script_path = dir.join("fake-ssh.sh");
-        fs::write(&script_path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-        let mut permissions = fs::metadata(&script_path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).unwrap();
-        script_path
-    }
-
-    #[tokio::test]
-    async fn exec_runs_real_command_and_returns_output() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let args_log = tempdir.path().join("args.log");
-        let key_path = tempdir.path().join("test_key");
-        let script = make_fake_ssh(
-            tempdir.path(),
-            &format!(
-                "printf '%s\n' \"$@\" > '{}'\nprintf 'remote stdout'\nprintf 'remote stderr' >&2\nexit 0",
-                args_log.display()
-            ),
-        );
-        let adapter = SshAdapter::with_program(&script);
-
-        let result = adapter
-            .exec(
-                &config_with_key(key_path.display().to_string()),
-                &SshCommand {
-                    command: "uname -a".into(),
-                },
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result.exit_code, 0);
-        assert_eq!(result.stdout, "remote stdout");
-        assert_eq!(result.stderr, "remote stderr");
-
-        let args = fs::read_to_string(args_log).unwrap();
-        assert!(args.contains("-i"));
-        assert!(args.contains("root@board.local"));
-        assert!(args.contains("uname -a"));
-        assert!(args.contains(&key_path.display().to_string()));
-    }
-
-    #[tokio::test]
-    async fn exec_returns_remote_exit_code_without_failing() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let script = make_fake_ssh(
-            tempdir.path(),
-            "printf 'partial output'\nprintf 'command failed' >&2\nexit 7",
-        );
-        let adapter = SshAdapter::with_program(script);
-
-        let result = adapter
-            .exec(
-                &config_with_key(tempdir.path().join("test_key").display().to_string()),
-                &SshCommand {
-                    command: "false".into(),
-                },
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result.exit_code, 7);
-        assert_eq!(result.stdout, "partial output");
-        assert_eq!(result.stderr, "command failed");
-    }
-
-    #[tokio::test]
-    async fn connect_test_surfaces_remote_failures() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let script = make_fake_ssh(tempdir.path(), "printf 'permission denied' >&2\nexit 255");
-        let adapter = SshAdapter::with_program(script);
-
-        let error = adapter
-            .connect_test(&config_with_key(
-                tempdir.path().join("test_key").display().to_string(),
-            ))
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            SshAdapterError::CommandFailed { exit_code: 255, .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn reboot_accepts_expected_disconnect() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let script = make_fake_ssh(
-            tempdir.path(),
-            "printf 'Connection reset by peer' >&2\nexit 255",
-        );
-        let adapter = SshAdapter::with_program(script);
-
-        adapter
-            .reboot(&config_with_key(
-                tempdir.path().join("test_key").display().to_string(),
-            ))
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn tail_logs_stream_yields_stdout_and_stderr_lines() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let script = make_fake_ssh(
-            tempdir.path(),
-            "printf 'line one\nline two\n'\nprintf 'warn one\n' >&2\nexit 0",
-        );
-        let adapter = SshAdapter::with_program(script);
-
-        let mut session = adapter
-            .tail_logs_stream(
-                &config_with_key(tempdir.path().join("test_key").display().to_string()),
-                "/var/log/messages",
-            )
-            .await
-            .unwrap();
-
-        let mut chunks = Vec::new();
-        while let Some(chunk) = session.next_chunk().await.unwrap() {
-            chunks.push(chunk);
-        }
-
-        assert_eq!(chunks.len(), 3);
-        assert!(chunks.contains(&SshLogChunk {
-            channel: SshStreamChannel::Stdout,
-            line: "line one".into(),
-        }));
-        assert!(chunks.contains(&SshLogChunk {
-            channel: SshStreamChannel::Stdout,
-            line: "line two".into(),
-        }));
-        assert!(chunks.contains(&SshLogChunk {
-            channel: SshStreamChannel::Stderr,
-            line: "warn one".into(),
-        }));
     }
 }

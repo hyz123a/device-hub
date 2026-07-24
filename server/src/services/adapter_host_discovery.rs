@@ -1,21 +1,60 @@
-use device_hub_adapter_jlink::JlinkAdapter;
-use device_hub_adapter_serial::SerialAdapter;
+use std::sync::Arc;
+
 use futures::future::BoxFuture;
 
 use crate::ports::{HostDiscoveryError, HostDiscoveryPort};
 
-#[derive(Clone)]
+type SerialDiscovery = Arc<
+    dyn Fn() -> BoxFuture<
+            'static,
+            Result<Vec<device_hub_shared::DiscoveredSerialPort>, HostDiscoveryError>,
+        > + Send
+        + Sync,
+>;
+type JlinkDiscovery = Arc<
+    dyn Fn() -> BoxFuture<
+            'static,
+            Result<Vec<device_hub_shared::DiscoveredJlinkProbe>, HostDiscoveryError>,
+        > + Send
+        + Sync,
+>;
+
+#[derive(Clone, Default)]
 pub struct AdapterHostDiscovery {
-    serial_adapter: SerialAdapter,
-    jlink_adapter: JlinkAdapter,
+    serial: Option<SerialDiscovery>,
+    jlink: Option<JlinkDiscovery>,
 }
 
 impl AdapterHostDiscovery {
-    pub fn new(serial_adapter: SerialAdapter, jlink_adapter: JlinkAdapter) -> Self {
-        Self {
-            serial_adapter,
-            jlink_adapter,
-        }
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[cfg(feature = "serial")]
+    pub fn with_serial(mut self, adapter: device_hub_adapter_serial::SerialAdapter) -> Self {
+        self.serial = Some(Arc::new(move || {
+            let adapter = adapter.clone();
+            Box::pin(async move {
+                adapter
+                    .discover_ports()
+                    .map_err(|error| HostDiscoveryError::Serial(error.to_string()))
+            })
+        }));
+        self
+    }
+
+    #[cfg(feature = "jlink")]
+    pub fn with_jlink(mut self, adapter: device_hub_adapter_jlink::JlinkAdapter) -> Self {
+        self.jlink = Some(Arc::new(move || {
+            let adapter = adapter.clone();
+            Box::pin(async move {
+                adapter
+                    .scan_probes()
+                    .await
+                    .map_err(|error| HostDiscoveryError::Jlink(error.to_string()))
+            })
+        }));
+        self
     }
 }
 
@@ -24,24 +63,27 @@ impl HostDiscoveryPort for AdapterHostDiscovery {
         &self,
     ) -> BoxFuture<'static, Result<Vec<device_hub_shared::DiscoveredSerialPort>, HostDiscoveryError>>
     {
-        let serial_adapter = self.serial_adapter.clone();
-        Box::pin(async move {
-            serial_adapter
-                .discover_ports()
-                .map_err(|error| HostDiscoveryError::Serial(error.to_string()))
-        })
+        match self.serial.clone() {
+            Some(discover) => discover(),
+            None => Box::pin(async {
+                Err(HostDiscoveryError::Serial(
+                    "serial capability is unavailable".into(),
+                ))
+            }),
+        }
     }
 
     fn list_jlink_probes(
         &self,
     ) -> BoxFuture<'static, Result<Vec<device_hub_shared::DiscoveredJlinkProbe>, HostDiscoveryError>>
     {
-        let jlink_adapter = self.jlink_adapter.clone();
-        Box::pin(async move {
-            jlink_adapter
-                .scan_probes()
-                .await
-                .map_err(|error| HostDiscoveryError::Jlink(error.to_string()))
-        })
+        match self.jlink.clone() {
+            Some(discover) => discover(),
+            None => Box::pin(async {
+                Err(HostDiscoveryError::Jlink(
+                    "jlink capability is unavailable".into(),
+                ))
+            }),
+        }
     }
 }

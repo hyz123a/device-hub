@@ -1,0 +1,86 @@
+name: cross-platform
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install trunk --locked
+      - run: cargo test --workspace --all-features
+      - run: cargo test -p device-hub-server --no-default-features --features serial
+      - run: sh -n tools/run-windows-from-wsl.sh
+      - run: tools/build-frontend-bundle.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-bundle
+          path: target/frontend-bundle/frontend.bundle.tar
+
+  windows-native:
+    needs: linux
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-bundle
+          path: target/frontend-bundle
+      - run: cargo check -p device-hub-server --no-default-features --features serial
+      - run: cargo check -p device-hub-server --no-default-features --features full
+      - run: cargo test -p device-hub-server --no-default-features --features serial --lib --bins
+      - run: cargo test -p device-hub-server --no-default-features --features serial --tests
+      - run: cargo test -p device-hub-adapter-ssh -p device-hub-adapter-jlink -p device-hub-adapter-adb --all-features
+      - run: cargo test -p device-hub-server --no-default-features --features full,test-fixtures --test api
+      - shell: pwsh
+        run: |
+          $null = [scriptblock]::Create(
+            (Get-Content tools/windows-server-control.ps1 -Raw)
+          )
+      - shell: pwsh
+        run: tools/build-windows.ps1 -Release
+      - shell: pwsh
+        run: tools/windows-runtime-smoke.ps1 -ServerPath target/x86_64-pc-windows-msvc/release/device-hub-server.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: device-hub-windows-serial
+          path: |
+            target/packages/device-hub-windows-serial.zip
+            windows-runtime-smoke.json
+
+  linux-to-windows:
+    needs: linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-bundle
+          path: target/frontend-bundle
+      - run: sudo apt-get update && sudo apt-get install --yes clang lld llvm
+      - run: cargo install cargo-xwin --locked
+      - run: tools/check-windows.sh
+      - run: tools/build-windows-from-linux.sh
+        env:
+          DEVICE_HUB_FRONTEND_BUNDLE: ${{ github.workspace }}/target/frontend-bundle/frontend.bundle.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: device-hub-windows-serial-xwin
+          path: target/packages/device-hub-windows-serial.zip

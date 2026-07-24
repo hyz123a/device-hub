@@ -25,7 +25,11 @@ if [ -z "$TRUNK_BIN" ]; then
   fi
 fi
 
-"$TRUNK_BIN" build --config "$FRONTEND_DIR/Trunk.toml" --release --dist "$DIST_DIR" >&2
+if [ "${NO_COLOR:-}" = "1" ]; then
+  NO_COLOR=true "$TRUNK_BIN" build --config "$FRONTEND_DIR/Trunk.toml" --release --dist "$DIST_DIR" >&2
+else
+  "$TRUNK_BIN" build --config "$FRONTEND_DIR/Trunk.toml" --release --dist "$DIST_DIR" >&2
+fi
 tar -cf "$OUTPUT_BUNDLE" -C "$DIST_DIR" .
 
 printf '%s\n' "$OUTPUT_BUNDLE"

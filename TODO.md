@@ -15,6 +15,21 @@
 - [x] Migrate `frontend` styling to Tailwind CSS by scanning `frontend/src/**/*.rs`, compiling a generated stylesheet, and switching `frontend/index.html` to load it
 
 ## Next
+- [x] Make Device Hub a native Windows/Linux application with reliable host-device access ([TDD plan](docs/plans/2026-07-24-windows-linux-cross-platform.md))
+  - [x] Before any Windows-specific work, replace the fixed `AdapterActionRunner` composition with a capability registry.
+  - [x] Make serial, SSH, J-Link, and ADB independently selectable Cargo features and runtime capabilities; disabled adapters must not initialize, probe tools, register actions, or appear in the UI.
+  - [x] Keep API, use cases, job lifecycle, event contracts, and storage behavior platform-neutral.
+  - [x] Confine executable names, null-device paths, home-directory resolution, and other host differences to concrete adapter/platform helpers.
+  - [x] Build the Windows server from Linux with `cargo-xwin` and `x86_64-pc-windows-msvc`, while retaining native Windows CI as the release authority.
+  - [x] Replace Unix shell-script process fakes with cross-platform Rust fixtures and server-level injected behavior.
+  - [x] Support native Windows serial discovery and access through COM ports without WSL USB/IP.
+  - [x] Identify serial devices by stable USB attributes where available instead of treating `COM25` or `/dev/ttyUSB0` as permanent identity.
+  - [x] Keep `serial.tail` running across transient disconnects by rediscovering and reopening the port with capped backoff and observable reconnect events.
+  - [x] Add Linux and Windows CI coverage for supported feature profiles.
+  - [x] Verify the native Windows executable, embedded UI, COM24/COM25 discovery/open/cancel, and stale-port resolution by physical location on real CH340 hardware.
+  - [x] Verify registry CRUD/restart persistence and job artifact/evidence storage through Windows-native runtime smoke.
+  - [x] Verify Windows lock observation and physical CH340 unplug/replug while the same `serial.tail` job stays active, then receives post-reconnect stdout and persists `raw-stream.log`.
+  - [x] Run target-safe Windows hardware checks for `serial.write` and `serial.exec` against the Linux HomeBase using `printf` markers and read-only `uname -srm`.
 - [x] Eliminate multi-device log stalls when live and persisted buffers reach their limits ([TDD guide](docs/plans/2026-07-15-multi-device-log-pipeline-tdd.md))
   - Replace the frontend live-event `Vec` with a bounded ring/chunked buffer so eviction does not shift the full retained history.
   - Make the selected buffered-event cap limit the underlying event store, not only the rendered snapshot.

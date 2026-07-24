@@ -10,3 +10,9 @@ serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-serial = "5"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Devices_DeviceAndDriverInstallation",
+  "Win32_Foundation",
+] }

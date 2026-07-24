@@ -6,6 +6,7 @@ Device Hub turns common hardware operations into structured jobs with APIs, evid
 
 ## Current Capabilities
 
+- Compile-time and runtime capability registry: Serial, SSH, J-Link, and ADB can be built and enabled independently
 - Device registry loaded from `devices.yaml`
 - SSH actions:
   - `ssh.exec`
@@ -14,6 +15,9 @@ Device Hub turns common hardware operations into structured jobs with APIs, evid
 - Serial actions:
   - `serial.tail`
   - `serial.write`
+  - `serial.exec`
+  - stable USB identity selection and automatic reconnect after transient disconnects
+  - native Linux tty and Windows COM-port operation
 - J-Link actions:
   - `jlink.probe`
   - `jlink.flash`
@@ -47,15 +51,40 @@ Device Hub turns common hardware operations into structured jobs with APIs, evid
 cp devices.example.yaml devices.yaml
 ```
 
-2. Run the server API.
+2. Run the serial-only server API (the default build profile).
 
 ```bash
 cargo run -p device-hub-server
 ```
 
+Use an opt-in adapter profile when needed:
+
+```bash
+cargo run -p device-hub-server --no-default-features --features serial,ssh
+cargo run -p device-hub-server --no-default-features --features full
+```
+
 The server listens on `http://127.0.0.1:3000` and serves both `/api/...` and the embedded frontend when a bundle is available.
 
-3. Run the frontend in dev mode from `frontend/`.
+3. To run the Windows-native serial server from WSL, cross-compile it and use the managed launcher:
+
+```bash
+tools/build-windows-from-linux.sh
+tools/run-windows-from-wsl.sh start --config ./devices.windows.yaml
+```
+
+The launcher runs the Windows executable outside the WSL USB/IP path, uses COM ports directly, and defaults to <http://127.0.0.1:3001>. The Linux/WSL server can continue using <http://127.0.0.1:3000> at the same time.
+
+```bash
+tools/run-windows-from-wsl.sh status
+tools/run-windows-from-wsl.sh logs --follow
+tools/run-windows-from-wsl.sh restart
+tools/run-windows-from-wsl.sh stop
+```
+
+The launcher copies the executable and configuration into `%LOCALAPPDATA%\DeviceHub`; PID, process state, server logs, registry, and artifacts remain on the Windows filesystem. `devices.windows.yaml` contains the validated HomeBase, Camera, and CH340 mappings with physical-location selectors. Update their COM fallbacks and selectors for another host or USB socket.
+
+4. Run the frontend in dev mode from `frontend/`.
 
 ```bash
 cd frontend
@@ -85,6 +114,10 @@ devices:
     serial:
       port: /dev/ttyUSB0
       baud: 115200
+      selector:
+        vid: 6790       # 0x1a86
+        pid: 29987      # 0x7523
+        serial_number: CH341-A
 
   - id: board-02
     label: Bare Metal Target
@@ -96,13 +129,32 @@ devices:
       autoconnect: true
 ```
 
-Capabilities are inferred from the config:
+The binary feature set, the runtime `adapters` block, and device config all participate in capability resolution:
 
-- devices with `ssh` support SSH actions
-- devices with `serial` support serial tail and write
-- devices with `jlink` support J-Link actions
+- `GET /api/capabilities` reports compiled, enabled, available, actions, and unavailable reason
+- an adapter that was not compiled or was disabled does not initialize, discover tools, register actions, or appear as usable in the UI
+- devices still need the corresponding `ssh`, `serial`, `jlink`, or `adb` connection block
+
+```yaml
+adapters:
+  serial: true
+  ssh: false
+  jlink: false
+  adb: false
+  serial_reconnect:
+    max_attempts: null
+    initial_delay_ms: 100
+    max_delay_ms: 2000
+    prevent_system_sleep: true
+```
+
+See [Windows/Linux builds](docs/windows-linux.md) for native Windows and cross-compilation commands.
+
+Recoverable serial disconnects and unexpected EOF keep the original `serial.tail` job alive. Reconnect evidence records the attempt, old/new endpoint, latest `outage_ms`, and cumulative `total_disconnected_ms`.
 
 ## Common Flows
+
+The examples below use the Linux/WSL default `http://127.0.0.1:3000`. Use `http://127.0.0.1:3001` when operating the Windows-native instance.
 
 ### Start an action
 

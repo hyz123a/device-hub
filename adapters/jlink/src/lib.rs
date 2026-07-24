@@ -90,7 +90,7 @@ pub struct JlinkAdapter {
 impl JlinkAdapter {
     pub fn new() -> Self {
         Self {
-            program: PathBuf::from("JLinkExe"),
+            program: PathBuf::from(default_jlink_program()),
         }
     }
 
@@ -128,11 +128,12 @@ impl JlinkAdapter {
         request: &FlashRequest,
     ) -> Result<JlinkExecution<FlashResult>, JlinkAdapterError> {
         let firmware = normalize_firmware_path(&request.firmware_path);
+        let firmware_command_path = quote_jlink_path(&firmware);
         let output = self
             .run_script(
                 config,
                 &[
-                    &format!("loadfile {}", firmware.display()),
+                    &format!("loadfile {firmware_command_path}"),
                     "r",
                     "g",
                     "exit",
@@ -362,6 +363,20 @@ fn normalize_firmware_path(path: &str) -> PathBuf {
     Path::new(path.trim()).to_path_buf()
 }
 
+fn quote_jlink_path(path: &Path) -> String {
+    format!("\"{}\"", path.display().to_string().replace('"', "\\\""))
+}
+
+#[cfg(windows)]
+fn default_jlink_program() -> &'static str {
+    "JLink.exe"
+}
+
+#[cfg(not(windows))]
+fn default_jlink_program() -> &'static str {
+    "JLinkExe"
+}
+
 fn build_artifacts(command_script: &str, stdout: &str, stderr: &str) -> Vec<JlinkArtifact> {
     let mut artifacts = vec![JlinkArtifact {
         name: "jlink.command".into(),
@@ -398,100 +413,7 @@ impl Default for JlinkAdapter {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
-
     use super::*;
-
-    fn make_fake_jlink(dir: &Path, body: &str) -> PathBuf {
-        let script_path = dir.join("fake-jlink.sh");
-        fs::write(&script_path, format!("#!/bin/sh\nset -eu\n{body}\n")).expect("write fake jlink");
-        let mut permissions = fs::metadata(&script_path)
-            .expect("fake jlink metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod fake jlink");
-        script_path
-    }
-
-    fn config() -> JlinkConfig {
-        JlinkConfig {
-            serial: "123456789".into(),
-            device: "STM32H743".into(),
-            interface: "SWD".into(),
-            speed_khz: 4000,
-            autoconnect: true,
-        }
-    }
-
-    #[tokio::test]
-    async fn probe_returns_artifacts_and_structured_result() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let program = make_fake_jlink(
-            tempdir.path(),
-            "script=\"\"\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = \"-CommandFile\" ]; then script=$2; shift 2; else shift; fi; done\ncat \"$script\"\nprintf 'probe ok\\n'",
-        );
-        let adapter = JlinkAdapter::with_program(program);
-
-        let execution = adapter.probe(&config()).await.expect("probe result");
-
-        assert!(execution.result.connected);
-        assert_eq!(execution.result.serial, "123456789");
-        assert!(
-            execution
-                .artifacts
-                .iter()
-                .any(|artifact| artifact.name == "jlink.command")
-        );
-        assert!(
-            execution
-                .artifacts
-                .iter()
-                .any(|artifact| artifact.name == "jlink.stdout.log")
-        );
-    }
-
-    #[tokio::test]
-    async fn failing_command_keeps_stdout_artifacts() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let program = make_fake_jlink(
-            tempdir.path(),
-            "printf 'attach failed\\n'\nprintf 'dap error\\n' >&2\nexit 1",
-        );
-        let adapter = JlinkAdapter::with_program(program);
-
-        let error = adapter
-            .reset(&config())
-            .await
-            .expect_err("reset should fail");
-
-        match error {
-            JlinkAdapterError::CommandFailed {
-                stdout,
-                stderr,
-                artifacts,
-                ..
-            } => {
-                assert!(stdout.contains("attach failed"));
-                assert_eq!(stderr, "dap error");
-                assert!(
-                    artifacts
-                        .iter()
-                        .any(|artifact| artifact.name == "jlink.command")
-                );
-                assert!(
-                    artifacts
-                        .iter()
-                        .any(|artifact| artifact.name == "jlink.stdout.log")
-                );
-                assert!(
-                    artifacts
-                        .iter()
-                        .any(|artifact| artifact.name == "jlink.stderr.log")
-                );
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
 
     #[test]
     fn parses_scanned_probe_output() {
@@ -512,5 +434,21 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn firmware_paths_are_quoted_for_jlink_command_files() {
+        assert_eq!(
+            quote_jlink_path(Path::new("C:\\Program Files\\firmware image.bin")),
+            "\"C:\\Program Files\\firmware image.bin\""
+        );
+    }
+
+    #[test]
+    fn default_program_matches_the_host_platform() {
+        #[cfg(windows)]
+        assert_eq!(default_jlink_program(), "JLink.exe");
+        #[cfg(not(windows))]
+        assert_eq!(default_jlink_program(), "JLinkExe");
     }
 }

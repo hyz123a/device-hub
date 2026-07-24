@@ -1,19 +1,22 @@
 use std::{path::PathBuf, time::Duration};
 
+#[cfg(unix)]
+use device_hub_server::app::build_router_with_job_policy_and_serial_stream_opener;
 use device_hub_server::{
     app::{
         build_router_with_job_policy, build_router_with_job_policy_and_board_profiles,
         build_router_with_job_policy_and_evidence_store,
         build_router_with_job_policy_and_host_discovery,
-        build_router_with_job_policy_and_serial_stream_opener,
     },
     config::AppConfig,
     ports::{HostDiscoveryError, HostDiscoveryPort, JobEvidenceStorePort},
     services::job_manager::JobPolicyProvider,
 };
+#[cfg(unix)]
+use device_hub_shared::SerialExecRequest;
 use device_hub_shared::{
     ActionRequest, AdbConfig, BoardProfile, Device, DiscoveredJlinkProbe, DiscoveredSerialPort,
-    JlinkConfig, Job, JobStatus, LogEvent, SerialConfig, SerialExecRequest, SshConfig,
+    JlinkConfig, Job, JobStatus, LogEvent, SerialConfig, SshConfig,
 };
 use futures::{StreamExt, future::BoxFuture};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -51,6 +54,7 @@ impl TestApp {
         request.send().await.expect("failed to execute request")
     }
 
+    #[cfg(unix)]
     pub async fn exec_serial(
         &self,
         device_id: &str,
@@ -337,6 +341,7 @@ pub async fn spawn_app_with_config_and_evidence_store(
     }
 }
 
+#[cfg(unix)]
 pub async fn spawn_app_with_config_job_policy_and_serial_stream_opener(
     config: AppConfig,
     policy_provider: JobPolicyProvider,
@@ -377,7 +382,7 @@ pub async fn spawn_app_with_config_job_policy_and_serial_stream_opener(
     }
 }
 
-fn test_config() -> AppConfig {
+pub fn test_config() -> AppConfig {
     AppConfig {
         devices: vec![
             Device {
@@ -406,6 +411,7 @@ fn test_config() -> AppConfig {
                 serial: Some(SerialConfig {
                     port: "/dev/ttyUSB0".into(),
                     baud: 115200,
+                    selector: None,
                 }),
                 jlink: None,
                 adb: Some(AdbConfig {
@@ -426,6 +432,7 @@ fn test_config() -> AppConfig {
                 serial: Some(SerialConfig {
                     port: "/dev/ttyUSB1".into(),
                     baud: 115200,
+                    selector: None,
                 }),
                 jlink: Some(JlinkConfig {
                     serial: "987654321".into(),
@@ -442,6 +449,7 @@ fn test_config() -> AppConfig {
         jlink_program: None,
         adb_program: None,
         artifacts_dir: None,
+        adapters: Default::default(),
     }
 }
 

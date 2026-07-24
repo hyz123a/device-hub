@@ -11,9 +11,9 @@ use serde::Deserialize;
 
 use crate::{app::AppState, error::AppError};
 use device_hub_shared::{
-    ActionRequest, ActionStartResponse, BoardProfile, DiscoveredJlinkProbe, DiscoveredSerialPort,
-    EventFilter, Job, JobEvidence, LogCacheClearResponse, LogChannel, LogEvent, LogLevel,
-    LogSource, SerialExecRequest, SerialExecResult,
+    ActionRequest, ActionStartResponse, BoardProfile, CapabilitySnapshot, DiscoveredJlinkProbe,
+    DiscoveredSerialPort, EventFilter, Job, JobEvidence, LogCacheClearResponse, LogChannel,
+    LogEvent, LogLevel, LogSource, SerialExecRequest, SerialExecResult,
 };
 
 pub async fn root() -> Json<serde_json::Value> {
@@ -21,6 +21,10 @@ pub async fn root() -> Json<serde_json::Value> {
         "name": "device-hub",
         "status": "ok"
     }))
+}
+
+pub async fn list_capabilities(State(state): State<AppState>) -> Json<CapabilitySnapshot> {
+    Json(state.use_cases.list_capabilities())
 }
 
 pub async fn list_devices(State(state): State<AppState>) -> Json<Vec<device_hub_shared::Device>> {

@@ -2,7 +2,10 @@ use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 use yew_router::prelude::*;
 
-use crate::{api, app::Route};
+use crate::{
+    api,
+    app::{CapabilityContext, Route},
+};
 use device_hub_shared::{ActiveTailStatus, DeviceDetail, Job, JobStatus};
 
 #[derive(Properties, PartialEq)]
@@ -22,6 +25,11 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
     let running_serial_tail = use_state(|| Option::<ActiveTailStatus>::None);
     let running_adb_logcat = use_state(|| Option::<ActiveTailStatus>::None);
     let navigator = use_navigator();
+    let host_capabilities = use_context::<CapabilityContext>().unwrap_or_default();
+    let ssh_available = host_capabilities.adapter_available("ssh");
+    let serial_available = host_capabilities.adapter_available("serial");
+    let jlink_available = host_capabilities.adapter_available("jlink");
+    let adb_available = host_capabilities.adapter_available("adb");
 
     {
         let detail = detail.clone();
@@ -61,15 +69,15 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                                 <div class="mt-5 flex flex-col gap-4 border-t border-[rgb(var(--dh-border)/0.32)] pt-4 sm:flex-row sm:items-center sm:justify-between">
                                     <div>
                                         <h3 class="mb-1 mt-0 text-lg font-semibold text-ink">{"SSH"}</h3>
-                                        <p class="m-0 text-ink-muted">{if detail.capabilities.has_ssh { "Configured" } else { "Unavailable" }}</p>
+                                        <p class="m-0 text-ink-muted">{connection_status(detail.capabilities.has_ssh, ssh_available)}</p>
                                     </div>
                                     <div>
                                         <h3 class="mb-1 mt-0 text-lg font-semibold text-ink">{"Serial"}</h3>
-                                        <p class="m-0 text-ink-muted">{if detail.capabilities.has_serial { "Configured" } else { "Unavailable" }}</p>
+                                        <p class="m-0 text-ink-muted">{connection_status(detail.capabilities.has_serial, serial_available)}</p>
                                     </div>
                                     <div>
                                         <h3 class="mb-1 mt-0 text-lg font-semibold text-ink">{"J-Link"}</h3>
-                                        <p class="m-0 text-ink-muted">{if detail.capabilities.has_jlink { "Configured" } else { "Unavailable" }}</p>
+                                        <p class="m-0 text-ink-muted">{connection_status(detail.capabilities.has_jlink, jlink_available)}</p>
                                     </div>
                                 </div>
                             </>
@@ -81,7 +89,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
             </article>
             {
                 if let Some(detail) = (*detail).clone() {
-                    if detail.capabilities.has_ssh {
+                    if detail.capabilities.has_ssh && ssh_available {
                         let exec_command_value = (*exec_command).clone();
                         let tail_path_value = (*tail_path).clone();
                         let device_id = detail.device.id.clone();
@@ -321,10 +329,24 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
             }
             {
                 if let Some(detail) = (*detail).clone() {
-                    if detail.capabilities.has_serial {
+                    if detail.capabilities.has_serial && serial_available {
                         let device_id = detail.device.id.clone();
                         let pending_action_value = (*pending_action).clone();
                         let running_serial_tail_value = (*running_serial_tail).clone();
+                        let serial_identity = detail
+                            .device
+                            .serial
+                            .as_ref()
+                            .map(|config| {
+                                serial_identity_label(
+                                    config,
+                                    running_serial_tail_value
+                                        .as_ref()
+                                        .and_then(|tail| tail.current_endpoint.as_deref()),
+                                    running_serial_tail_value.is_some(),
+                                )
+                            })
+                            .unwrap_or_default();
                         let device_logs_route = Route::DeviceLogs {
                             device_id: device_id.clone(),
                         };
@@ -380,6 +402,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
                         html! {
                             <article class="dh-panel rounded-[24px] p-6 xl:col-span-2">
                                 <span class="inline-flex items-center gap-2 uppercase tracking-[0.18em] text-[0.74rem] text-accent-strong">{"Serial actions"}</span>
+                                <p class="mb-0 mt-3 font-mono text-sm text-ink-muted">{serial_identity}</p>
                                 <div class="mt-4 flex flex-wrap justify-end gap-3">
                                     <Link<Route>
                                         classes="rounded-2xl dh-button px-4 py-3 text-sm"
@@ -458,7 +481,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
             }
             {
                 if let Some(detail) = (*detail).clone() {
-                    if detail.capabilities.has_adb {
+                    if detail.capabilities.has_adb && adb_available {
                         let device_id = detail.device.id.clone();
                         let pending_action_value = (*pending_action).clone();
                         let running_adb_logcat_value = (*running_adb_logcat).clone();
@@ -595,7 +618,7 @@ pub fn device_detail_page(props: &DeviceDetailProps) -> Html {
             }
             {
                 if let Some(detail) = (*detail).clone() {
-                    if detail.capabilities.has_jlink {
+                    if detail.capabilities.has_jlink && jlink_available {
                         let device_id = detail.device.id.clone();
                         let pending_action_value = (*pending_action).clone();
                         let jlink_firmware_path_value = (*jlink_firmware_path).clone();
@@ -805,10 +828,113 @@ fn find_active_tail(detail: &DeviceDetail, action: &str) -> Option<ActiveTailSta
         .cloned()
 }
 
+fn connection_status(configured: bool, adapter_available: bool) -> &'static str {
+    if !adapter_available {
+        "Adapter unavailable"
+    } else if configured {
+        "Configured"
+    } else {
+        "Not configured"
+    }
+}
+
+fn serial_identity_label(
+    config: &device_hub_shared::SerialConfig,
+    runtime_endpoint: Option<&str>,
+    tail_active: bool,
+) -> String {
+    let mut identity = vec![match runtime_endpoint {
+        Some(endpoint) => format!("current endpoint: {endpoint} @ {} baud", config.baud),
+        None if tail_active => format!(
+            "current endpoint: disconnected/waiting | configured fallback: {} @ {} baud",
+            config.port, config.baud
+        ),
+        None => format!(
+            "configured endpoint: {} @ {} baud",
+            config.port, config.baud
+        ),
+    }];
+    if let Some(selector) = config.selector.as_ref() {
+        let mut fields = Vec::new();
+        if let Some(vid) = selector.vid {
+            fields.push(format!("VID {vid:04x}"));
+        }
+        if let Some(pid) = selector.pid {
+            fields.push(format!("PID {pid:04x}"));
+        }
+        if let Some(serial) = selector.serial_number.as_ref() {
+            fields.push(format!("SN {serial}"));
+        }
+        if let Some(location) = selector.physical_location.as_ref() {
+            fields.push(format!("location {location}"));
+        }
+        if !fields.is_empty() {
+            identity.push(format!("stable identity: {}", fields.join(" · ")));
+        }
+    }
+    identity.join(" | ")
+}
+
 fn active_tail_from_job(job: &Job) -> ActiveTailStatus {
     ActiveTailStatus {
         action: job.action.clone(),
         job_id: job.id.clone(),
         active_since: job.created_at,
+        current_endpoint: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use device_hub_shared::{SerialConfig, SerialDeviceSelector};
+
+    use super::serial_identity_label;
+
+    #[test]
+    fn runtime_endpoint_replaces_stale_configured_endpoint_in_label() {
+        let config = SerialConfig {
+            port: "COM404".into(),
+            baud: 115200,
+            selector: Some(SerialDeviceSelector {
+                vid: Some(0x1a86),
+                pid: Some(0x7523),
+                serial_number: Some("7".into()),
+                physical_location: Some("PCIROOT(0)#USB(4)".into()),
+            }),
+        };
+
+        let label = serial_identity_label(&config, Some("COM24"), true);
+
+        assert!(label.contains("current endpoint: COM24 @ 115200 baud"));
+        assert!(!label.contains("COM404"));
+        assert!(label.contains("location PCIROOT(0)#USB(4)"));
+    }
+
+    #[test]
+    fn configured_endpoint_is_explicit_when_no_tail_is_active() {
+        let config = SerialConfig {
+            port: "/dev/ttyUSB0".into(),
+            baud: 115200,
+            selector: None,
+        };
+
+        assert_eq!(
+            serial_identity_label(&config, None, false),
+            "configured endpoint: /dev/ttyUSB0 @ 115200 baud"
+        );
+    }
+
+    #[test]
+    fn active_tail_without_endpoint_is_explicitly_waiting() {
+        let config = SerialConfig {
+            port: "COM404".into(),
+            baud: 115200,
+            selector: None,
+        };
+
+        assert_eq!(
+            serial_identity_label(&config, None, true),
+            "current endpoint: disconnected/waiting | configured fallback: COM404 @ 115200 baud"
+        );
     }
 }

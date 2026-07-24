@@ -1,7 +1,8 @@
 use device_hub_shared::{
-    ActionRequest, ActionStartResponse, ActiveTailStatus, BoardProfile, Device, DeviceDetail,
-    DeviceRuntimeStatus, DiscoveredJlinkProbe, DiscoveredSerialPort, EventFilter, Job, JobEvidence,
-    JobStatus, JobSummary, LogChannel, LogEvent, LogLevel, SerialExecRequest, SerialExecResult,
+    ActionRequest, ActionStartResponse, ActiveTailStatus, BoardProfile, CapabilitySnapshot, Device,
+    DeviceDetail, DeviceRuntimeStatus, DiscoveredJlinkProbe, DiscoveredSerialPort, EventFilter,
+    Job, JobEvidence, JobStatus, JobSummary, LogChannel, LogEvent, LogLevel, SerialExecRequest,
+    SerialExecResult,
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -9,8 +10,9 @@ use crate::{
     error::AppError,
     events::EventBus,
     ports::{
-        DeviceRegistryError, DynDeviceRegistry, DynHostDiscovery, DynJobEvidenceStore,
-        DynSerialCommandExecutor, HostDiscoveryError, PersistedEventSummary, SerialCommandError,
+        DeviceRegistryError, DynCapabilityProvider, DynDeviceRegistry, DynHostDiscovery,
+        DynJobEvidenceStore, DynSerialCommandExecutor, HostDiscoveryError, PersistedEventSummary,
+        SerialCommandError,
     },
     services::job_manager::JobManager,
     storage::job_store::JobStore,
@@ -26,6 +28,7 @@ pub struct AppUseCases {
     events: EventBus,
     evidence_store: DynJobEvidenceStore,
     serial_command_executor: DynSerialCommandExecutor,
+    capabilities: DynCapabilityProvider,
 }
 
 pub struct AppUseCaseDependencies {
@@ -36,6 +39,7 @@ pub struct AppUseCaseDependencies {
     pub events: EventBus,
     pub evidence_store: DynJobEvidenceStore,
     pub serial_command_executor: DynSerialCommandExecutor,
+    pub capabilities: DynCapabilityProvider,
 }
 
 impl AppUseCases {
@@ -49,7 +53,12 @@ impl AppUseCases {
             events: dependencies.events,
             evidence_store: dependencies.evidence_store,
             serial_command_executor: dependencies.serial_command_executor,
+            capabilities: dependencies.capabilities,
         }
+    }
+
+    pub fn list_capabilities(&self) -> CapabilitySnapshot {
+        self.capabilities.snapshot()
     }
 
     pub fn list_board_profiles(&self) -> Vec<BoardProfile> {
@@ -99,6 +108,7 @@ impl AppUseCases {
     }
 
     pub async fn list_serial_ports(&self) -> Result<Vec<DiscoveredSerialPort>, AppError> {
+        ensure_adapter_available("serial", &self.capabilities.snapshot())?;
         let mut ports = self
             .host_discovery
             .list_serial_ports()
@@ -109,6 +119,7 @@ impl AppUseCases {
     }
 
     pub async fn list_jlink_probes(&self) -> Result<Vec<DiscoveredJlinkProbe>, AppError> {
+        ensure_adapter_available("jlink", &self.capabilities.snapshot())?;
         let mut probes = self
             .host_discovery
             .list_jlink_probes()
@@ -124,7 +135,7 @@ impl AppUseCases {
         request: SerialExecRequest,
     ) -> Result<SerialExecResult, AppError> {
         let device = self.get_device(device_id)?;
-        validate_action("serial.exec", &device)?;
+        validate_action("serial.exec", &device, &self.capabilities.snapshot())?;
         validate_serial_exec_request(&request)?;
         ensure_device_has_no_active_jobs_except(&self.jobs, device_id, "serial.tail")?;
         self.serial_command_executor
@@ -237,7 +248,7 @@ impl AppUseCases {
         reuse: bool,
     ) -> Result<ActionStartResponse, AppError> {
         let device = self.get_device(device_id)?;
-        validate_action(&action, &device)?;
+        validate_action(&action, &device, &self.capabilities.snapshot())?;
         validate_payload(&action, &device, payload.as_ref())?;
         if reuse
             && matches!(action.as_str(), "serial.tail" | "adb.logcat")
@@ -263,6 +274,7 @@ impl AppUseCases {
     pub async fn rerun_job(&self, job_id: &str) -> Result<Job, AppError> {
         let previous = self.get_job(job_id)?;
         let device = self.get_device(&previous.device_id)?;
+        validate_action(&previous.action, &device, &self.capabilities.snapshot())?;
         let payload = previous.payload.clone().map(|payload| ActionRequest {
             payload: Some(payload),
         });
@@ -287,6 +299,7 @@ impl AppUseCases {
             })
             .map(|job| ActiveTailStatus {
                 action: job.action,
+                current_endpoint: self.jobs.runtime_endpoint(&job.id),
                 job_id: job.id,
                 active_since: job.created_at,
             })
@@ -523,6 +536,30 @@ fn validate_device(device: &Device) -> Result<(), AppError> {
                 "serial config requires baud > 0".into(),
             ));
         }
+        if let Some(selector) = serial.selector.as_ref() {
+            if selector.vid.is_none()
+                && selector.pid.is_none()
+                && selector.serial_number.is_none()
+                && selector.physical_location.is_none()
+            {
+                return Err(AppError::BadRequest(
+                    "serial selector requires at least one stable USB attribute".into(),
+                ));
+            }
+            if selector
+                .serial_number
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+                || selector
+                    .physical_location
+                    .as_deref()
+                    .is_some_and(|value| value.trim().is_empty())
+            {
+                return Err(AppError::BadRequest(
+                    "serial selector string attributes must not be empty".into(),
+                ));
+            }
+        }
     }
 
     if let Some(jlink) = &device.jlink {
@@ -566,7 +603,26 @@ fn validate_device(device: &Device) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_action(action: &str, device: &Device) -> Result<(), AppError> {
+fn validate_action(
+    action: &str,
+    device: &Device,
+    capabilities: &CapabilitySnapshot,
+) -> Result<(), AppError> {
+    let Some(capability) = capabilities.action(action) else {
+        return Err(AppError::BadRequest(format!(
+            "unsupported action `{action}`"
+        )));
+    };
+    if !capability.available {
+        return Err(AppError::CapabilityUnavailable(format!(
+            "action `{action}` ({})",
+            capability
+                .unavailable_reason
+                .as_deref()
+                .unwrap_or("unavailable")
+        )));
+    }
+
     let supported = match action {
         "ssh.exec" | "ssh.tail" | "ssh.reboot" => device.ssh.is_some(),
         "serial.tail" | "serial.write" | "serial.exec" => device.serial.is_some(),
@@ -574,11 +630,7 @@ fn validate_action(action: &str, device: &Device) -> Result<(), AppError> {
         "jlink.probe" | "jlink.flash" | "jlink.verify" | "jlink.reset" | "jlink.erase" => {
             device.jlink.is_some()
         }
-        _ => {
-            return Err(AppError::BadRequest(format!(
-                "unsupported action `{action}`"
-            )));
-        }
+        _ => false,
     };
 
     if supported {
@@ -587,6 +639,28 @@ fn validate_action(action: &str, device: &Device) -> Result<(), AppError> {
         Err(AppError::BadRequest(format!(
             "device `{}` does not support action `{action}`",
             device.id
+        )))
+    }
+}
+
+fn ensure_adapter_available(
+    adapter_id: &str,
+    capabilities: &CapabilitySnapshot,
+) -> Result<(), AppError> {
+    let Some(capability) = capabilities.adapter(adapter_id) else {
+        return Err(AppError::CapabilityUnavailable(format!(
+            "adapter `{adapter_id}` (unknown)"
+        )));
+    };
+    if capability.available {
+        Ok(())
+    } else {
+        Err(AppError::CapabilityUnavailable(format!(
+            "adapter `{adapter_id}` ({})",
+            capability
+                .unavailable_reason
+                .as_deref()
+                .unwrap_or("unavailable")
         )))
     }
 }

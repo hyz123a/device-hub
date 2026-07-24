@@ -1,3 +1,14 @@
+adapters:
+  serial: true
+  ssh: true
+  jlink: true
+  adb: false
+  serial_reconnect:
+    max_attempts: null
+    initial_delay_ms: 100
+    max_delay_ms: 2000
+    prevent_system_sleep: true
+
 devices:
   - id: board-01
     label: Linux Board
@@ -9,6 +20,10 @@ devices:
     serial:
       port: /dev/ttyUSB0
       baud: 115200
+      selector:
+        vid: 6790
+        pid: 29987
+        serial_number: CH341-A
 
   - id: board-02
     label: Bare Metal Target
