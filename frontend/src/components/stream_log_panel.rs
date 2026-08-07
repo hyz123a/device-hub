@@ -16,9 +16,56 @@ use crate::components::{
 };
 
 const EVENT_PAGE_SIZE: usize = 50;
-const DEFAULT_BUFFERED_EVENTS: usize = 100_000;
-const BUFFERED_EVENT_LIMIT_OPTIONS: [usize; 4] = [100_000, 200_000, 500_000, 1_000_000];
+const DEFAULT_BUFFERED_EVENTS: usize = 20_000;
+const BUFFERED_EVENT_LIMIT_OPTIONS: [usize; 4] = [20_000, 50_000, 100_000, 200_000];
 const RENDER_FLUSH_DELAY_MS: u32 = 32;
+const WS_RECONNECT_BASE_DELAY_MS: u32 = 500;
+const WS_RECONNECT_MAX_DELAY_MS: u32 = 10_000;
+
+fn reconnect_delay_ms(attempt: u32) -> u32 {
+    WS_RECONNECT_BASE_DELAY_MS
+        .saturating_mul(2_u32.saturating_pow(attempt.min(5)))
+        .min(WS_RECONNECT_MAX_DELAY_MS)
+}
+
+fn should_reconnect_for_lifecycle_event(event_type: &str, document_hidden: bool) -> bool {
+    event_type != "visibilitychange" || !document_hidden
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_delay_uses_capped_exponential_backoff() {
+        assert_eq!(reconnect_delay_ms(0), 500);
+        assert_eq!(reconnect_delay_ms(1), 1_000);
+        assert_eq!(reconnect_delay_ms(4), 8_000);
+        assert_eq!(reconnect_delay_ms(5), 10_000);
+        assert_eq!(reconnect_delay_ms(20), 10_000);
+    }
+
+    #[test]
+    fn reconnects_for_wake_events_but_not_when_page_becomes_hidden() {
+        assert!(!should_reconnect_for_lifecycle_event(
+            "visibilitychange",
+            true
+        ));
+        assert!(should_reconnect_for_lifecycle_event(
+            "visibilitychange",
+            false
+        ));
+        assert!(should_reconnect_for_lifecycle_event("pageshow", true));
+        assert!(should_reconnect_for_lifecycle_event("focus", true));
+        assert!(should_reconnect_for_lifecycle_event("online", true));
+    }
+
+    #[test]
+    fn default_buffer_limit_keeps_long_running_tabs_bounded() {
+        assert_eq!(DEFAULT_BUFFERED_EVENTS, 20_000);
+        assert_eq!(BUFFERED_EVENT_LIMIT_OPTIONS[0], DEFAULT_BUFFERED_EVENTS);
+    }
+}
 
 struct WsBindings {
     socket: WebSocket,
@@ -30,11 +77,11 @@ struct WsBindings {
 
 impl Drop for WsBindings {
     fn drop(&mut self) {
-        let _ = self.socket.close();
         self.socket.set_onopen(None);
         self.socket.set_onmessage(None);
         self.socket.set_onerror(None);
         self.socket.set_onclose(None);
+        let _ = self.socket.close();
     }
 }
 
@@ -74,9 +121,9 @@ pub struct StreamLogPanelProps {
     /// Called whenever the internal connection status changes.
     #[prop_or_default]
     pub on_connection_change: Callback<String>,
-    /// Called whenever a WS parse error occurs.
+    /// Reports a stream error as `Some`, then emits `None` after a successful connection.
     #[prop_or_default]
-    pub on_error: Callback<String>,
+    pub on_error: Callback<Option<String>>,
     /// Shows an operator control that clears the server-side in-memory event cache.
     #[prop_or_default]
     pub show_clear_cache: bool,
@@ -108,11 +155,60 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
     let clear_cache_status = use_state(|| Option::<String>::None);
     let clear_cache_pending = use_state(|| false);
     let socket = use_mut_ref(|| Option::<WsBindings>::None);
+    let reconnect_timer = use_mut_ref(|| Option::<Timeout>::None);
+    let reconnect_attempt = use_mut_ref(|| 0_u32);
+    let reconnect_revision = use_state(|| 0_u32);
+    let lifecycle_revision = use_state(|| 0_u32);
+    let lifecycle_sequence = use_mut_ref(|| 0_u32);
 
     let connection = props
         .connection_status
         .clone()
         .unwrap_or_else(|| (*internal_connection).clone());
+
+    // Browser background tabs can suspend retry timers. Reconnect immediately
+    // when the page becomes active or the browser reports network recovery.
+    {
+        let lifecycle_revision = lifecycle_revision.clone();
+        let lifecycle_sequence = lifecycle_sequence.clone();
+        use_effect_with((), move |_| {
+            let bindings = web_sys::window().and_then(|window| {
+                let document = window.document()?;
+                let listener_document = document.clone();
+                let listener = Closure::wrap(Box::new(move |event: Event| {
+                    if should_reconnect_for_lifecycle_event(
+                        event.type_().as_str(),
+                        listener_document.hidden(),
+                    ) {
+                        let next_revision = {
+                            let mut sequence = lifecycle_sequence.borrow_mut();
+                            let next = (*sequence).wrapping_add(1);
+                            *sequence = next;
+                            next
+                        };
+                        lifecycle_revision.set(next_revision);
+                    }
+                }) as Box<dyn FnMut(_)>);
+                let callback = listener.as_ref().unchecked_ref();
+                let _ = document.add_event_listener_with_callback("visibilitychange", callback);
+                for event_type in ["pageshow", "focus", "online"] {
+                    let _ = window.add_event_listener_with_callback(event_type, callback);
+                }
+                Some((window, document, listener))
+            });
+
+            move || {
+                if let Some((window, document, listener)) = bindings {
+                    let callback = listener.as_ref().unchecked_ref();
+                    let _ =
+                        document.remove_event_listener_with_callback("visibilitychange", callback);
+                    for event_type in ["pageshow", "focus", "online"] {
+                        let _ = window.remove_event_listener_with_callback(event_type, callback);
+                    }
+                }
+            }
+        });
+    }
 
     // Seed store with initial events on mount / revision change
     {
@@ -243,162 +339,207 @@ pub fn stream_log_panel(props: &StreamLogPanelProps) -> Html {
         let on_error_cb = props.on_error.clone();
         let pending_render = pending_render.clone();
         let socket = socket.clone();
+        let reconnect_timer = reconnect_timer.clone();
+        let reconnect_attempt = reconnect_attempt.clone();
+        let reconnect_revision_handle = reconnect_revision.clone();
+        let reconnect_revision_value = *reconnect_revision;
+        let lifecycle_revision_value = *lifecycle_revision;
         let ws_url = (*effective_ws_url).clone();
         let connect_revision = props.connect_revision;
-        use_effect_with((connect_revision, ws_url.clone()), move |_| {
-            if let Some(existing) = socket.borrow_mut().take() {
-                let _ = existing.socket.close();
-            }
+        use_effect_with(
+            (
+                connect_revision,
+                reconnect_revision_value,
+                lifecycle_revision_value,
+                ws_url.clone(),
+            ),
+            move |_| {
+                reconnect_timer.borrow_mut().take();
+                socket.borrow_mut().take();
 
-            let set_connection = {
-                let internal_connection = internal_connection.clone();
-                let on_connection_change = on_connection_change.clone();
-                move |status: &str| {
-                    internal_connection.set(status.to_owned());
-                    on_connection_change.emit(status.to_owned());
-                }
-            };
+                let set_connection = {
+                    let internal_connection = internal_connection.clone();
+                    let on_connection_change = on_connection_change.clone();
+                    move |status: &str| {
+                        internal_connection.set(status.to_owned());
+                        on_connection_change.emit(status.to_owned());
+                    }
+                };
 
-            if let Some(url) = ws_url {
-                set_connection("connecting");
-
-                match WebSocket::new(&url) {
-                    Ok(ws) => {
-                        let set_open = {
-                            let internal_connection = internal_connection.clone();
-                            let on_connection_change = on_connection_change.clone();
-                            move || {
-                                internal_connection.set("connected".to_owned());
-                                on_connection_change.emit("connected".to_owned());
-                            }
+                let schedule_reconnect = {
+                    let internal_connection = internal_connection.clone();
+                    let on_connection_change = on_connection_change.clone();
+                    let reconnect_timer = reconnect_timer.clone();
+                    let reconnect_attempt = reconnect_attempt.clone();
+                    let reconnect_revision = reconnect_revision_handle.clone();
+                    Callback::from(move |()| {
+                        internal_connection.set("reconnecting".to_owned());
+                        on_connection_change.emit("reconnecting".to_owned());
+                        let attempt = {
+                            let mut attempt = reconnect_attempt.borrow_mut();
+                            let current = *attempt;
+                            *attempt = current.saturating_add(1);
+                            current
                         };
-                        let on_open = Closure::wrap(Box::new(move |_event: Event| {
-                            set_open();
-                        })
-                            as Box<dyn FnMut(_)>);
-                        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+                        let delay = reconnect_delay_ms(attempt);
+                        let reconnect_revision = reconnect_revision.clone();
+                        *reconnect_timer.borrow_mut() = Some(Timeout::new(delay, move || {
+                            reconnect_revision.set((*reconnect_revision).wrapping_add(1));
+                        }));
+                    })
+                };
 
-                        let message_events = events.clone();
-                        let message_store = event_store.clone();
-                        let message_pending_terminal_events = pending_terminal_events.clone();
-                        let message_terminal_batch_sequence = terminal_batch_sequence.clone();
-                        let message_terminal_batch = terminal_batch.clone();
-                        let message_buffered_event_count = buffered_event_count.clone();
-                        let message_available_sources = available_sources.clone();
-                        let message_view_mode = view_mode_ref.clone();
-                        let message_error = on_error_cb.clone();
-                        let pending_render = pending_render.clone();
-                        let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
-                            if let Some(text) = event.data().as_string() {
-                                match serde_json::from_str::<LogEvent>(&text) {
-                                    Ok(log_event) => {
-                                        if !message_store.borrow_mut().push(log_event.clone()) {
-                                            return;
+                if let Some(url) = ws_url {
+                    set_connection("connecting");
+
+                    match WebSocket::new(&url) {
+                        Ok(ws) => {
+                            let set_open = {
+                                let internal_connection = internal_connection.clone();
+                                let on_connection_change = on_connection_change.clone();
+                                let reconnect_attempt = reconnect_attempt.clone();
+                                let recovered_error = on_error_cb.clone();
+                                move || {
+                                    *reconnect_attempt.borrow_mut() = 0;
+                                    recovered_error.emit(None);
+                                    internal_connection.set("connected".to_owned());
+                                    on_connection_change.emit("connected".to_owned());
+                                }
+                            };
+                            let on_open = Closure::wrap(Box::new(move |_event: Event| {
+                                set_open();
+                            })
+                                as Box<dyn FnMut(_)>);
+                            ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+
+                            let message_events = events.clone();
+                            let message_store = event_store.clone();
+                            let message_pending_terminal_events = pending_terminal_events.clone();
+                            let message_terminal_batch_sequence = terminal_batch_sequence.clone();
+                            let message_terminal_batch = terminal_batch.clone();
+                            let message_buffered_event_count = buffered_event_count.clone();
+                            let message_available_sources = available_sources.clone();
+                            let message_view_mode = view_mode_ref.clone();
+                            let message_error = on_error_cb.clone();
+                            let pending_render = pending_render.clone();
+                            let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
+                                if let Some(text) = event.data().as_string() {
+                                    match serde_json::from_str::<LogEvent>(&text) {
+                                        Ok(log_event) => {
+                                            if !message_store.borrow_mut().push(log_event.clone()) {
+                                                return;
+                                            }
+                                            message_pending_terminal_events
+                                                .borrow_mut()
+                                                .push(log_event);
+                                            if pending_render.borrow().is_none() {
+                                                let message_events = message_events.clone();
+                                                let message_store = message_store.clone();
+                                                let pending_terminal_events =
+                                                    message_pending_terminal_events.clone();
+                                                let terminal_batch_sequence =
+                                                    message_terminal_batch_sequence.clone();
+                                                let terminal_batch = message_terminal_batch.clone();
+                                                let buffered_event_count =
+                                                    message_buffered_event_count.clone();
+                                                let available_sources =
+                                                    message_available_sources.clone();
+                                                let view_mode = message_view_mode.clone();
+                                                let pending_render_for_timer =
+                                                    pending_render.clone();
+                                                let pending_render_for_callback =
+                                                    pending_render.clone();
+                                                *pending_render_for_timer.borrow_mut() =
+                                                    Some(Timeout::new(
+                                                        RENDER_FLUSH_DELAY_MS,
+                                                        move || {
+                                                            let store = message_store.borrow();
+                                                            buffered_event_count.set(store.len());
+                                                            available_sources.set(
+                                                                store.available_device_sources(),
+                                                            );
+                                                            if *view_mode.borrow()
+                                                                == LogViewMode::Event
+                                                            {
+                                                                message_events
+                                                                    .set(store.snapshot());
+                                                            }
+                                                            drop(store);
+                                                            let batch = std::mem::take(
+                                                                &mut *pending_terminal_events
+                                                                    .borrow_mut(),
+                                                            );
+                                                            if !batch.is_empty() {
+                                                                let mut sequence =
+                                                                    terminal_batch_sequence
+                                                                        .borrow_mut();
+                                                                *sequence =
+                                                                    sequence.wrapping_add(1);
+                                                                terminal_batch.set(TerminalBatch {
+                                                                    sequence: *sequence,
+                                                                    events: batch,
+                                                                });
+                                                            }
+                                                            pending_render_for_callback
+                                                                .borrow_mut()
+                                                                .take();
+                                                        },
+                                                    ));
+                                            }
                                         }
-                                        message_pending_terminal_events
-                                            .borrow_mut()
-                                            .push(log_event);
-                                        if pending_render.borrow().is_none() {
-                                            let message_events = message_events.clone();
-                                            let message_store = message_store.clone();
-                                            let pending_terminal_events =
-                                                message_pending_terminal_events.clone();
-                                            let terminal_batch_sequence =
-                                                message_terminal_batch_sequence.clone();
-                                            let terminal_batch = message_terminal_batch.clone();
-                                            let buffered_event_count =
-                                                message_buffered_event_count.clone();
-                                            let available_sources =
-                                                message_available_sources.clone();
-                                            let view_mode = message_view_mode.clone();
-                                            let pending_render_for_timer = pending_render.clone();
-                                            let pending_render_for_callback =
-                                                pending_render.clone();
-                                            *pending_render_for_timer.borrow_mut() = Some(
-                                                Timeout::new(RENDER_FLUSH_DELAY_MS, move || {
-                                                    let store = message_store.borrow();
-                                                    buffered_event_count.set(store.len());
-                                                    available_sources
-                                                        .set(store.available_device_sources());
-                                                    if *view_mode.borrow() == LogViewMode::Event {
-                                                        message_events.set(store.snapshot());
-                                                    }
-                                                    drop(store);
-                                                    let batch = std::mem::take(
-                                                        &mut *pending_terminal_events.borrow_mut(),
-                                                    );
-                                                    if !batch.is_empty() {
-                                                        let mut sequence =
-                                                            terminal_batch_sequence.borrow_mut();
-                                                        *sequence = sequence.wrapping_add(1);
-                                                        terminal_batch.set(TerminalBatch {
-                                                            sequence: *sequence,
-                                                            events: batch,
-                                                        });
-                                                    }
-                                                    pending_render_for_callback.borrow_mut().take();
-                                                }),
-                                            );
+                                        Err(parse_error) => {
+                                            message_error.emit(Some(parse_error.to_string()));
                                         }
-                                    }
-                                    Err(parse_error) => {
-                                        message_error.emit(parse_error.to_string());
                                     }
                                 }
-                            }
-                        })
-                            as Box<dyn FnMut(_)>);
-                        ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+                            })
+                                as Box<dyn FnMut(_)>);
+                            ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
 
-                        let err_cb = on_error_cb.clone();
-                        let on_error = Closure::wrap(Box::new(move |_event: ErrorEvent| {
-                            err_cb.emit("websocket stream error".to_owned());
-                        })
-                            as Box<dyn FnMut(_)>);
-                        ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+                            let err_cb = on_error_cb.clone();
+                            let on_error = Closure::wrap(Box::new(move |_event: ErrorEvent| {
+                                err_cb.emit(Some("websocket stream error".to_owned()));
+                            })
+                                as Box<dyn FnMut(_)>);
+                            ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
 
-                        let set_close = {
-                            let internal_connection = internal_connection.clone();
-                            let on_connection_change = on_connection_change.clone();
-                            move || {
-                                internal_connection.set("disconnected".to_owned());
-                                on_connection_change.emit("disconnected".to_owned());
-                            }
-                        };
-                        let on_close = Closure::wrap(Box::new(move |_event: Event| {
-                            set_close();
-                        })
-                            as Box<dyn FnMut(_)>);
-                        ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+                            let schedule_reconnect_on_close = schedule_reconnect.clone();
+                            let on_close = Closure::wrap(Box::new(move |_event: Event| {
+                                schedule_reconnect_on_close.emit(());
+                            })
+                                as Box<dyn FnMut(_)>);
+                            ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
 
-                        *socket.borrow_mut() = Some(WsBindings {
-                            socket: ws,
-                            _on_open: on_open,
-                            _on_message: on_message,
-                            _on_error: on_error,
-                            _on_close: on_close,
-                        });
+                            *socket.borrow_mut() = Some(WsBindings {
+                                socket: ws,
+                                _on_open: on_open,
+                                _on_message: on_message,
+                                _on_error: on_error,
+                                _on_close: on_close,
+                            });
+                        }
+                        Err(_) => {
+                            on_error_cb.emit(Some("failed to open websocket".to_owned()));
+                            schedule_reconnect.emit(());
+                        }
                     }
-                    Err(_) => {
-                        set_connection("disconnected");
-                        on_error_cb.emit("failed to open websocket".to_owned());
-                    }
+                } else {
+                    *reconnect_attempt.borrow_mut() = 0;
+                    set_connection("disconnected");
                 }
-            } else {
-                set_connection("disconnected");
-            }
 
-            let socket = socket.clone();
-            let pending_render = pending_render.clone();
-            let pending_terminal_events = pending_terminal_events.clone();
-            move || {
-                pending_render.borrow_mut().take();
-                pending_terminal_events.borrow_mut().clear();
-                if let Some(existing) = socket.borrow_mut().take() {
-                    let _ = existing.socket.close();
+                let socket = socket.clone();
+                let reconnect_timer = reconnect_timer.clone();
+                let pending_render = pending_render.clone();
+                let pending_terminal_events = pending_terminal_events.clone();
+                move || {
+                    reconnect_timer.borrow_mut().take();
+                    pending_render.borrow_mut().take();
+                    pending_terminal_events.borrow_mut().clear();
+                    socket.borrow_mut().take();
                 }
-            }
-        });
+            },
+        );
     }
 
     // Buffer limit change

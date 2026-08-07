@@ -19,6 +19,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
     let evidence = use_state(|| Option::<JobEvidence>::None);
     let initial_events = use_state(Vec::<LogEvent>::new);
     let error = use_state(|| Option::<String>::None);
+    let ws_error = use_state(|| Option::<String>::None);
     let connection = use_state(|| "connecting".to_owned());
     let rerun_pending = use_state(|| false);
     let ws_url = use_state(|| Option::<String>::None);
@@ -31,6 +32,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
         let evidence = evidence.clone();
         let initial_events = initial_events.clone();
         let error = error.clone();
+        let ws_error = ws_error.clone();
         let connection = connection.clone();
         let ws_url = ws_url.clone();
         let connect_revision = connect_revision.clone();
@@ -40,6 +42,7 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
             evidence.set(None);
             initial_events.set(Vec::new());
             error.set(None);
+            ws_error.set(None);
             connection.set("connecting".to_owned());
             ws_url.set(None);
             connect_revision.set(connect_revision.wrapping_add(1));
@@ -92,8 +95,8 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
         Callback::from(move |status: String| connection.set(status))
     };
     let on_ws_error = {
-        let error = error.clone();
-        Callback::from(move |msg: String| error.set(Some(msg)))
+        let ws_error = ws_error.clone();
+        Callback::from(move |message: Option<String>| ws_error.set(message))
     };
 
     let status_class = match connection.as_str() {
@@ -217,6 +220,13 @@ pub fn job_detail_page(props: &JobDetailProps) -> Html {
                         }
                     } else {
                         html! { <p class="mb-0 mt-4 text-ink-muted">{"Loading job..."}</p> }
+                    }
+                }
+                {
+                    if let Some(message) = (*ws_error).clone() {
+                        html! { <p class="mb-0 mt-4 text-sm text-red-700">{message}</p> }
+                    } else {
+                        Html::default()
                     }
                 }
             </article>

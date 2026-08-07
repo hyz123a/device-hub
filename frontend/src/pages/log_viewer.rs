@@ -93,7 +93,7 @@ pub fn log_viewer_page(props: &LogViewerProps) -> Html {
     };
     let on_error = {
         let error = error.clone();
-        Callback::from(move |msg: String| error.set(Some(msg)))
+        Callback::from(move |message: Option<String>| error.set(message))
     };
 
     let status_class = match connection.as_str() {

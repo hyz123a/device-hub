@@ -278,17 +278,14 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, state: AppState, fi
 
     loop {
         tokio::select! {
-            maybe_event = subscription.recv() => {
-                match maybe_event {
-                    Ok(event) if filter.matches(&event) => {
-                        if sender.send(axum::extract::ws::Message::Text(
-                            serde_json::to_string(&event).unwrap_or_default().into(),
-                        )).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
+            maybe_event = next_available_event(&mut subscription) => {
+                let Some(event) = maybe_event else {
+                    break;
+                };
+                if filter.matches(&event) && sender.send(axum::extract::ws::Message::Text(
+                    serde_json::to_string(&event).unwrap_or_default().into(),
+                )).await.is_err() {
+                    break;
                 }
             }
             message = receiver.next() => {
@@ -299,6 +296,50 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, state: AppState, fi
                 }
             }
         }
+    }
+}
+
+async fn next_available_event(
+    subscription: &mut tokio::sync::broadcast::Receiver<LogEvent>,
+) -> Option<LogEvent> {
+    loop {
+        match subscription.recv().await {
+            Ok(event) => return Some(event),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod websocket_tests {
+    use super::*;
+    use tokio::sync::broadcast;
+
+    fn event(message: &str) -> LogEvent {
+        LogEvent {
+            ts: Utc::now(),
+            device_id: "device-1".into(),
+            job_id: "job-1".into(),
+            source: LogSource::Serial,
+            channel: LogChannel::Stdout,
+            level: LogLevel::Info,
+            message: message.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_stream_skips_lagged_events_and_resumes_with_latest_event() {
+        let (sender, mut receiver) = broadcast::channel(2);
+        sender.send(event("one")).expect("send one");
+        sender.send(event("two")).expect("send two");
+        sender.send(event("three")).expect("send three");
+
+        let received = next_available_event(&mut receiver)
+            .await
+            .expect("stream should resume after lagging");
+
+        assert_eq!(received.message, "two");
     }
 }
 

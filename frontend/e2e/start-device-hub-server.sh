@@ -35,4 +35,4 @@ cd "$test_dir"
 
 DEVICE_HUB_BIND_ADDR=127.0.0.1:3100 \
 DEVICE_HUB_CONFIG=devices.yaml \
-cargo run --manifest-path ../../Cargo.toml -p device-hub-server
+cargo run --manifest-path ../../Cargo.toml -p device-hub-server --bin device-hub-server
